@@ -1,0 +1,201 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Provider Configuration Schema",
+  "description": "JSON schema for validating utility provider configurations",
+  "type": "object",
+  "required": ["providers"],
+  "properties": {
+    "providers": {
+      "type": "array",
+      "description": "Array of provider configurations",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "displayName",
+          "type",
+          "regions",
+          "accountValidation",
+          "api",
+          "parsing",
+          "retry"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$",
+            "description": "Unique provider identifier in kebab-case"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Internal provider name"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "description": "User-facing provider name"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["gas", "water", "electricity", "trash"],
+            "description": "Utility service type"
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "Supported geographic regions"
+          },
+          "accountValidation": {
+            "type": "object",
+            "required": ["pattern", "formatDescription"],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Regex pattern for account number validation"
+              },
+              "formatDescription": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable format description"
+              }
+            },
+            "additionalProperties": false
+          },
+          "api": {
+            "type": "object",
+            "required": ["endpoint", "method", "headers"],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "format": "uri",
+                "description": "API endpoint URL with {{accountNumber}} placeholder"
+              },
+              "method": {
+                "type": "string",
+                "enum": ["GET", "POST"],
+                "description": "HTTP method"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "HTTP headers"
+              },
+              "request": {
+                "type": "object",
+                "required": ["body", "contentType"],
+                "properties": {
+                  "body": {
+                    "type": "object",
+                    "description": "Request body template (for POST)"
+                  },
+                  "contentType": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Content-Type header value"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "parsing": {
+            "type": "object",
+            "required": ["responseType"],
+            "properties": {
+              "responseType": {
+                "type": "string",
+                "enum": ["html", "json"],
+                "description": "Response format type"
+              },
+              "cssSelectors": {
+                "type": "object",
+                "required": ["balance"],
+                "properties": {
+                  "balance": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "CSS selector for balance amount"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "CSS selector for currency code"
+                  },
+                  "dueDate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "CSS selector for due date"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "CSS selectors for HTML parsing"
+              },
+              "jsonPath": {
+                "type": "object",
+                "required": ["balance"],
+                "properties": {
+                  "balance": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "JSONPath expression for balance amount"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "JSONPath expression for currency code"
+                  },
+                  "dueDate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "JSONPath expression for due date"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "JSONPath expressions for JSON parsing"
+              }
+            },
+            "additionalProperties": false
+          },
+          "retry": {
+            "type": "object",
+            "required": ["maxRetries", "retryDelays", "useExponentialBackoff"],
+            "properties": {
+              "maxRetries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10,
+                "description": "Maximum retry attempts"
+              },
+              "retryDelays": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minItems": 1,
+                "description": "Delay in ms for each retry attempt"
+              },
+              "useExponentialBackoff": {
+                "type": "boolean",
+                "description": "Whether to use exponential backoff"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

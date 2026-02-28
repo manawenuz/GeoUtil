@@ -1,0 +1,42 @@
+# Georgia Utility Monitor - Development Docker Compose Configuration
+# This configuration only runs Redis and Postgres for local development
+# Run the Next.js app locally with: npm run dev
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: utility-monitor-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-dev-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: utility-monitor-postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: utility_monitor
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpassword
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+      - ./migrations/postgres:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d utility_monitor"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis-dev-data:
+    driver: local
+  postgres-dev-data:
+    driver: local
