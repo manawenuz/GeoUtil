@@ -464,8 +464,8 @@ export default function NotificationConfig() {
             {linkToken ? (
               <div className="space-y-3">
                 <div className="rounded-md bg-gray-50 p-4">
-                  <p className="text-sm font-medium text-gray-700 mb-2">
-                    Send this to{" "}
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Send this to the bot on Telegram:{" "}
                     {linkBotUsername ? (
                       <a
                         href={`https://t.me/${linkBotUsername}`}
@@ -473,12 +473,11 @@ export default function NotificationConfig() {
                         rel="noopener noreferrer"
                         className="text-blue-600 hover:underline"
                       >
-                        @{linkBotUsername}
+                        https://t.me/{linkBotUsername}
                       </a>
                     ) : (
                       "the bot"
-                    )}{" "}
-                    on Telegram:
+                    )}
                   </p>
                   <code className="block bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm font-mono break-all select-all text-gray-900 dark:text-gray-100">
                     /link {linkToken}

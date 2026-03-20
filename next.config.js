@@ -1,6 +1,16 @@
+const { execSync } = require('child_process');
+
+let gitCommit = 'unknown';
+try {
+  gitCommit = execSync('git rev-parse --short HEAD').toString().trim();
+} catch {}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  env: {
+    NEXT_PUBLIC_GIT_COMMIT: gitCommit,
+  },
   eslint: {
     ignoreDuringBuilds: true,
   },

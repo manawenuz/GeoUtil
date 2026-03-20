@@ -292,6 +292,12 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      case 'version': {
+        const commit = process.env.NEXT_PUBLIC_GIT_COMMIT || 'unknown';
+        await telegram.sendMessage(chatId, `🔧 <b>Version</b>\n\nCommit: <code>${commit}</code>`);
+        break;
+      }
+
       default:
         // Check if this is a plain text reply (account number input)
         if (!command && message.text) {
