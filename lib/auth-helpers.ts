@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "./auth";
 import type { Session } from "next-auth";
 import { NextRequest, NextResponse } from "next/server";
+import { getStorageAdapter } from "./storage/factory";
 
 /**
  * Get the current session from NextAuth
@@ -93,6 +94,26 @@ export function withAuth(
           },
           { status: 401 }
         );
+      }
+
+      // Ensure user exists in DB (JWT strategy doesn't auto-create users)
+      try {
+        const storage = getStorageAdapter();
+        const existingUser = await storage.getUser(session.user.id);
+        if (!existingUser) {
+          await storage.createUser({
+            userId: session.user.id,
+            email: session.user.email || "",
+            name: session.user.name || "",
+            image: session.user.image,
+            emailVerified: null,
+            ntfyFeedUrl: "",
+            ntfyServerUrl: process.env.NTFY_SERVER_URL || "https://ntfy.sh",
+            notificationEnabled: true,
+          });
+        }
+      } catch (dbError) {
+        console.error("Failed to ensure user exists:", dbError);
       }
 
       return await handler(request, session);
