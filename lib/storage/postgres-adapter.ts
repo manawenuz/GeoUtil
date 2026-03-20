@@ -10,8 +10,11 @@ import {
   BalanceData,
   Notification,
   NotificationData,
+  TelegramLinkToken,
   MigrationStatus,
 } from './types';
+
+const USER_COLUMNS = 'user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled, telegram_chat_id, telegram_enabled, notification_channel';
 
 /**
  * PostgresAdapter - Storage adapter implementation for PostgreSQL
@@ -53,12 +56,21 @@ export class PostgresAdapter implements StorageAdapter {
   // ===== User Operations =====
 
   async createUser(userData: UserData): Promise<string> {
-    const userId = randomUUID();
+    const userId = userData.userId || randomUUID();
     
     await this.pool.query(
-      `INSERT INTO users (user_id, ntfy_feed_url, ntfy_server_url, notification_enabled)
-       VALUES ($1, $2, $3, $4)`,
-      [userId, userData.ntfyFeedUrl, userData.ntfyServerUrl, userData.notificationEnabled]
+      `INSERT INTO users (user_id, email, name, image, email_verified, ntfy_feed_url, ntfy_server_url, notification_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        userId,
+        userData.email,
+        userData.name,
+        userData.image || null,
+        userData.emailVerified || null,
+        userData.ntfyFeedUrl,
+        userData.ntfyServerUrl,
+        userData.notificationEnabled
+      ]
     );
 
     return userId;
@@ -66,7 +78,9 @@ export class PostgresAdapter implements StorageAdapter {
 
   async getUser(userId: string): Promise<User | null> {
     const result = await this.pool.query(
-      `SELECT user_id, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
+      `SELECT user_id, email, name, image, email_verified, created_at, updated_at,
+              ntfy_feed_url, ntfy_server_url, notification_enabled,
+              telegram_chat_id, telegram_enabled, notification_channel
        FROM users
        WHERE user_id = $1`,
       [userId]
@@ -76,18 +90,24 @@ export class PostgresAdapter implements StorageAdapter {
       return null;
     }
 
-    const row = result.rows[0];
+    return this.mapRowToUser(result.rows[0]);
+  }
+
+  private mapRowToUser(row: Record<string, unknown>): User {
     return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
+      userId: row.user_id as string,
+      email: row.email as string,
+      name: row.name as string,
+      image: row.image as string | undefined,
+      emailVerified: row.email_verified as Date | null,
+      createdAt: row.created_at as Date,
+      updatedAt: row.updated_at as Date,
+      ntfyFeedUrl: row.ntfy_feed_url as string,
+      ntfyServerUrl: row.ntfy_server_url as string,
+      notificationEnabled: row.notification_enabled as boolean,
+      telegramChatId: row.telegram_chat_id as string | undefined,
+      telegramEnabled: (row.telegram_enabled as boolean) ?? false,
+      notificationChannel: (row.notification_channel as 'ntfy' | 'telegram' | 'both') ?? 'ntfy',
     };
   }
 
@@ -107,6 +127,18 @@ export class PostgresAdapter implements StorageAdapter {
     if (userData.notificationEnabled !== undefined) {
       updates.push(`notification_enabled = $${paramIndex++}`);
       values.push(userData.notificationEnabled);
+    }
+    if (userData.telegramChatId !== undefined) {
+      updates.push(`telegram_chat_id = $${paramIndex++}`);
+      values.push(userData.telegramChatId);
+    }
+    if (userData.telegramEnabled !== undefined) {
+      updates.push(`telegram_enabled = $${paramIndex++}`);
+      values.push(userData.telegramEnabled);
+    }
+    if (userData.notificationChannel !== undefined) {
+      updates.push(`notification_channel = $${paramIndex++}`);
+      values.push(userData.notificationChannel);
     }
 
     if (updates.length === 0) {
@@ -490,6 +522,61 @@ export class PostgresAdapter implements StorageAdapter {
     };
   }
 
+  // ===== Telegram Link Token Operations =====
+
+  async createTelegramLinkToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO telegram_link_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)`,
+      [token, userId, expiresAt]
+    );
+  }
+
+  async getTelegramLinkToken(token: string): Promise<TelegramLinkToken | null> {
+    const result = await this.pool.query(
+      `SELECT token, user_id, created_at, expires_at, used
+       FROM telegram_link_tokens
+       WHERE token = $1 AND used = false AND expires_at > NOW()`,
+      [token]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      token: row.token,
+      userId: row.user_id,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      used: row.used,
+    };
+  }
+
+  async markTelegramLinkTokenUsed(token: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE telegram_link_tokens SET used = true WHERE token = $1`,
+      [token]
+    );
+  }
+
+  async cleanExpiredTelegramLinkTokens(): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM telegram_link_tokens WHERE expires_at < NOW() OR used = true`
+    );
+  }
+
+  // ===== User Lookup =====
+
+  async getUserByTelegramChatId(chatId: string): Promise<User | null> {
+    const result = await this.pool.query(
+      `SELECT ${USER_COLUMNS} FROM users WHERE telegram_chat_id = $1`,
+      [chatId]
+    );
+    return result.rows.length === 0 ? null : this.mapRowToUser(result.rows[0]);
+  }
+
+  async getAllUserIds(): Promise<string[]> {
+    const result = await this.pool.query(`SELECT user_id FROM users`);
+    return result.rows.map(row => row.user_id);
+  }
+
   /**
    * Close the connection pool
    * Should be called when shutting down the application
@@ -504,7 +591,7 @@ export class PostgresAdapter implements StorageAdapter {
     const result = await this.pool.query(
       `INSERT INTO users (email, name, image, email_verified, ntfy_feed_url, ntfy_server_url, notification_enabled)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled`,
+       RETURNING ${USER_COLUMNS}`,
       [
         userData.email,
         userData.name,
@@ -516,101 +603,34 @@ export class PostgresAdapter implements StorageAdapter {
       ]
     );
 
-    const row = result.rows[0];
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
-    };
+    return this.mapRowToUser(result.rows[0]);
   }
 
   async getAuthUser(userId: string): Promise<import('../auth-adapter').AuthUser | null> {
     const result = await this.pool.query(
-      `SELECT user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
-       FROM users
-       WHERE user_id = $1`,
+      `SELECT ${USER_COLUMNS} FROM users WHERE user_id = $1`,
       [userId]
     );
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    const row = result.rows[0];
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
-    };
+    return result.rows.length === 0 ? null : this.mapRowToUser(result.rows[0]);
   }
 
   async getAuthUserByEmail(email: string): Promise<import('../auth-adapter').AuthUser | null> {
     const result = await this.pool.query(
-      `SELECT user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
-       FROM users
-       WHERE email = $1`,
+      `SELECT ${USER_COLUMNS} FROM users WHERE email = $1`,
       [email]
     );
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    const row = result.rows[0];
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
-    };
+    return result.rows.length === 0 ? null : this.mapRowToUser(result.rows[0]);
   }
 
   async getAuthUserByAccount(provider: string, providerAccountId: string): Promise<import('../auth-adapter').AuthUser | null> {
     const result = await this.pool.query(
-      `SELECT u.user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at, u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled
+      `SELECT ${USER_COLUMNS.split(', ').map(c => `u.${c}`).join(', ')}
        FROM users u
        INNER JOIN auth_accounts a ON u.user_id = a.user_id
        WHERE a.provider = $1 AND a.provider_account_id = $2`,
       [provider, providerAccountId]
     );
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    const row = result.rows[0];
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
-    };
+    return result.rows.length === 0 ? null : this.mapRowToUser(result.rows[0]);
   }
 
   async updateAuthUser(userId: string, userData: Partial<import('../auth-adapter').AuthUser>): Promise<import('../auth-adapter').AuthUser> {
@@ -654,23 +674,11 @@ export class PostgresAdapter implements StorageAdapter {
       `UPDATE users
        SET ${updates.join(', ')}
        WHERE user_id = $${paramIndex}
-       RETURNING user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled`,
+       RETURNING ${USER_COLUMNS}`,
       values
     );
 
-    const row = result.rows[0];
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled,
-    };
+    return this.mapRowToUser(result.rows[0]);
   }
 
   async linkAccount(account: Omit<import('../auth-adapter').AuthAccount, 'id'>): Promise<import('../auth-adapter').AuthAccount> {

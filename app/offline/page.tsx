@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * Offline page
  * 
@@ -11,7 +13,7 @@ export default function OfflinePage() {
         <div className="text-center">
           <div className="text-6xl mb-6">📡</div>
           <h1 className="text-3xl font-bold text-gray-900 mb-4">
-            You're Offline
+            You&apos;re Offline
           </h1>
           <p className="text-lg text-gray-600 mb-8">
             Please check your internet connection and try again.

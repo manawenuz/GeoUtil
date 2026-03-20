@@ -173,9 +173,7 @@ export class SchedulerService {
       try {
         const notificationSent = await this.processAccount(
           account.accountId,
-          userId,
-          user.ntfyFeedUrl,
-          user.ntfyServerUrl
+          user
         );
         result.successfulChecks++;
         if (notificationSent) {
@@ -196,18 +194,10 @@ export class SchedulerService {
 
   /**
    * Process a single account: check balance and send notification if needed
-   * 
-   * @param accountId - The account ID to process
-   * @param userId - The user ID (for notification recording)
-   * @param ntfyFeedUrl - The encrypted ntfy feed URL for notifications
-   * @param ntfyServerUrl - The ntfy server URL
-   * @returns true if a notification was sent
    */
   private async processAccount(
     accountId: string,
-    userId: string,
-    ntfyFeedUrl: string,
-    ntfyServerUrl: string
+    user: import('./storage/types').User,
   ): Promise<boolean> {
     // Get account details
     const account = await this.storageAdapter.getAccount(accountId);
@@ -255,78 +245,72 @@ export class SchedulerService {
     // Handle overdue tracking and notifications
     return await this.handleBalanceNotification(
       accountId,
-      userId,
+      user,
       account.providerName,
+      account.providerType,
       decryptedAccountNumber,
-      balanceResult.balance,
-      ntfyFeedUrl,
-      ntfyServerUrl
+      balanceResult.balance
     );
   }
 
   /**
-   * Handle overdue tracking and send notification if needed
-   * 
-   * @param accountId - The account ID
-   * @param userId - The user ID
-   * @param providerName - The provider name
-   * @param accountNumber - The decrypted account number
-   * @param balance - The current balance
-   * @param ntfyFeedUrl - The encrypted ntfy feed URL
-   * @param ntfyServerUrl - The ntfy server URL
-   * @returns true if a notification was sent
+   * Handle overdue tracking and send notification if needed.
+   * Routes to ntfy, Telegram, or both based on user.notificationChannel.
    */
   private async handleBalanceNotification(
     accountId: string,
-    userId: string,
+    user: import('./storage/types').User,
     providerName: string,
+    providerType: string,
     accountNumber: string,
     balance: number,
-    ntfyFeedUrl: string,
-    ntfyServerUrl: string
   ): Promise<boolean> {
     if (balance === 0) {
-      // Reset overdue counter if balance is zero
       await this.storageAdapter.resetOverdueDays(accountId);
-      // Don't send notification for zero balance
       return false;
     }
 
-    // Increment overdue counter for non-zero balance
     const overdueDays = await this.storageAdapter.incrementOverdueDays(accountId);
-
-    // Determine priority based on overdue days
     const priority = this.notificationService.determinePriority(overdueDays);
-
-    // Format notification message
     const message = this.notificationService.formatBalanceMessage(
-      providerName,
-      accountNumber,
-      balance,
-      overdueDays
+      providerName, accountNumber, balance, overdueDays
     );
 
-    // Decrypt ntfy feed URL
-    const decryptedFeedUrl = this.encryptionService.decrypt(ntfyFeedUrl);
-    
-    // Extract topic from feed URL (last part of the URL)
-    const topic = decryptedFeedUrl.split('/').pop() || 'utility-monitor';
+    const channel = user.notificationChannel ?? 'ntfy';
+    let deliverySuccess = false;
 
-    // Send notification
-    const notificationPayload = {
-      topic,
-      title: 'Utility Bill Due',
-      message,
-      priority,
-      tags: ['bill', 'utility'],
-      serverUrl: ntfyServerUrl,
-    };
+    // Send via ntfy
+    if (channel === 'ntfy' || channel === 'both') {
+      try {
+        const decryptedFeedUrl = this.encryptionService.decrypt(user.ntfyFeedUrl);
+        const topic = decryptedFeedUrl.split('/').pop() || 'utility-monitor';
+        deliverySuccess = await this.notificationService.sendNotification({
+          topic,
+          title: 'Utility Bill Due',
+          message,
+          priority,
+          tags: ['bill', 'utility'],
+          serverUrl: user.ntfyServerUrl,
+        });
+      } catch (err) {
+        console.error('ntfy notification failed:', err);
+      }
+    }
 
-    const deliverySuccess = await this.notificationService.sendNotification(notificationPayload);
+    // Send via Telegram
+    if ((channel === 'telegram' || channel === 'both') && user.telegramEnabled && user.telegramChatId) {
+      const { TelegramService } = await import('./telegram-service');
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (botToken) {
+        const tg = new TelegramService(botToken);
+        const tgMessage = tg.formatBalanceNotification(providerName, providerType, balance);
+        const tgSuccess = await tg.sendMessage(user.telegramChatId, tgMessage);
+        deliverySuccess = deliverySuccess || tgSuccess;
+      }
+    }
 
-    // Record notification
     await this.storageAdapter.recordNotification({
-      userId,
+      userId: user.userId,
       accountId,
       sentAt: new Date(),
       priority,

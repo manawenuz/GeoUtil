@@ -1,8 +1,4 @@
-import { ensureInitialized } from "@/lib/ensure-init";
-
-export default async function Home() {
-  // Ensure app is initialized on first page load
-  await ensureInitialized();
+export default function Home() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">

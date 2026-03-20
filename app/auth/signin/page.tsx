@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { signIn } from "next-auth/react";
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -13,6 +14,14 @@ import { useSearchParams } from "next/navigation";
  * Requirements: 14.2, 14.13
  */
 export default function SignInPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
+      <SignInContent />
+    </Suspense>
+  );
+}
+
+function SignInContent() {
   const [isLoading, setIsLoading] = useState(false);
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") || "/";

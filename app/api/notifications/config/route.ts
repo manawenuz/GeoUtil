@@ -74,6 +74,9 @@ export const GET = withAuth(async (request: NextRequest, session) => {
       ntfyFeedUrl: decryptedFeedUrl || "",
       ntfyServerUrl: user.ntfyServerUrl || "https://ntfy.sh",
       notificationEnabled: user.notificationEnabled,
+      telegramLinked: !!user.telegramChatId,
+      telegramEnabled: user.telegramEnabled ?? false,
+      notificationChannel: user.notificationChannel ?? 'ntfy',
     });
     
   } catch (error) {

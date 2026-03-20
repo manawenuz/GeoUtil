@@ -23,6 +23,9 @@ export interface AuthUser {
   ntfyFeedUrl: string;
   ntfyServerUrl: string;
   notificationEnabled: boolean;
+  telegramChatId?: string;
+  telegramEnabled: boolean;
+  notificationChannel: 'ntfy' | 'telegram' | 'both';
 }
 
 // OAuth Account model

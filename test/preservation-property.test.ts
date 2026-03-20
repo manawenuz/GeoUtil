@@ -1,274 +1,377 @@
 /**
- * Preservation Property Tests - API Initialization Fix
+ * Preservation Property Tests - JWT User ID Mismatch Fix
  * 
  * **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
  * 
- * **Property 2: Preservation** - Existing Initialization Behavior
+ * **Property 2: Preservation** - Non-OAuth User Creation and Existing User Handling
  * 
- * IMPORTANT: These tests verify that existing working behavior is NOT broken by the fix.
+ * IMPORTANT: These tests MUST PASS on unfixed code - they establish the baseline
+ * behavior that must be preserved after implementing the fix.
  * 
- * This test suite verifies:
- * 1. Routes that already call ensureInitialized() (like /api/health) continue to work
- * 2. Routes that don't depend on initialized services continue to work
- * 3. Idempotent initialization behavior is preserved (multiple calls don't re-initialize)
- * 4. Error handling behavior when initialization fails is preserved
+ * This test suite verifies that existing behavior for non-OAuth scenarios remains unchanged:
+ * - When createUser() is called without userId (non-OAuth), system generates new random UUID
+ * - When user already exists, system returns existing user without creating duplicate
+ * - All data integrity constraints are enforced
+ * - All three storage adapters (postgres, sqlite, redis) maintain identical behavior
  * 
  * EXPECTED OUTCOME ON UNFIXED CODE: Tests PASS (confirms baseline behavior)
  * EXPECTED OUTCOME AFTER FIX: Tests PASS (confirms no regressions)
  */
 
-import { NextRequest } from 'next/server';
-import * as fc from 'fast-check';
+import { randomUUID } from 'crypto';
+import { SQLiteAdapter } from '@/lib/storage/sqlite-adapter';
+import { StorageAdapter, UserData } from '@/lib/storage/types';
+import Database from 'better-sqlite3';
+import fc from 'fast-check';
 
-// Import route handlers
-import { GET as healthGET } from '@/app/api/health/route';
+describe('Preservation Property Tests: Non-OAuth User Creation', () => {
+  let storageAdapter: StorageAdapter;
+  let cleanupFn: () => Promise<void>;
 
-// Mock dependencies
-jest.mock('@/lib/ensure-init');
-jest.mock('@/lib/storage/factory');
-jest.mock('@/lib/providers/factory');
-
-describe('Preservation Property: Existing Initialization Behavior', () => {
-  
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.STORAGE_BACKEND = 'postgres';
-    process.env.NODE_ENV = 'test';
+  beforeAll(async () => {
+    // Use SQLite for testing (in-memory database)
+    const db = new Database(':memory:');
     
-    // Mock ensureInitialized to resolve successfully
-    const { ensureInitialized } = require('@/lib/ensure-init');
-    (ensureInitialized as jest.Mock).mockResolvedValue(undefined);
+    // Run migrations to set up schema
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        email TEXT,
+        name TEXT,
+        image TEXT,
+        email_verified TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ntfy_feed_url TEXT NOT NULL,
+        ntfy_server_url TEXT NOT NULL,
+        notification_enabled INTEGER NOT NULL DEFAULT 1,
+        telegram_chat_id TEXT,
+        telegram_enabled INTEGER NOT NULL DEFAULT 0,
+        notification_channel TEXT NOT NULL DEFAULT 'ntfy'
+      );
+
+      CREATE TABLE IF NOT EXISTS accounts (
+        account_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        provider_type TEXT NOT NULL,
+        provider_name TEXT NOT NULL,
+        account_number TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      );
+    `);
+
+    storageAdapter = new SQLiteAdapter(db);
     
-    // Mock storage adapter
-    const { getStorageAdapter } = require('@/lib/storage/factory');
-    (getStorageAdapter as jest.Mock).mockReturnValue({
-      getMigrationStatus: jest.fn().mockResolvedValue({
-        appliedMigrations: ['001_initial'],
-        pendingMigrations: [],
-      }),
-      getProviderSuccessRate: jest.fn().mockResolvedValue(0.95),
+    cleanupFn = async () => {
+      db.close();
+    };
+  });
+
+  afterAll(async () => {
+    await cleanupFn();
+  });
+
+  /**
+   * Property 1: UUID Generation for Non-OAuth Users
+   * 
+   * When createUser() is called without a userId parameter (non-OAuth scenarios),
+   * the system MUST generate a valid UUID v4.
+   * 
+   * This property verifies that the existing UUID generation behavior is preserved.
+   */
+  describe('Property: UUID Generation', () => {
+    it('should generate valid UUIDs when no userId is provided', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            email: fc.emailAddress(),
+            name: fc.string({ minLength: 1, maxLength: 100 }),
+            image: fc.option(fc.webUrl(), { nil: undefined }),
+            emailVerified: fc.option(fc.date(), { nil: null }),
+            ntfyFeedUrl: fc.string(),
+            ntfyServerUrl: fc.webUrl(),
+            notificationEnabled: fc.boolean(),
+          }),
+          async (userData) => {
+            // Create user without providing userId (non-OAuth scenario)
+            const createdUserId = await storageAdapter.createUser(userData as UserData);
+
+            // Verify a valid UUID v4 was generated
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+            expect(createdUserId).toMatch(uuidRegex);
+
+            // Verify the user can be retrieved with the generated UUID
+            const retrievedUser = await storageAdapter.getUser(createdUserId);
+            expect(retrievedUser).not.toBeNull();
+            expect(retrievedUser?.userId).toBe(createdUserId);
+          }
+        ),
+        { numRuns: 20 } // Run 20 test cases
+      );
     });
-    
-    // Mock provider registry
-    const { getProviderRegistry } = require('@/lib/providers/factory');
-    (getProviderRegistry as jest.Mock).mockReturnValue({
-      listProviders: jest.fn().mockReturnValue([
-        {
-          name: 'te.ge',
-          providerName: 'te.ge',
+
+    it('should generate unique UUIDs for each user creation', async () => {
+      const userIds = new Set<string>();
+
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            email: fc.emailAddress(),
+            name: fc.string({ minLength: 1, maxLength: 100 }),
+            image: fc.option(fc.webUrl(), { nil: undefined }),
+            emailVerified: fc.option(fc.date(), { nil: null }),
+            ntfyFeedUrl: fc.string(),
+            ntfyServerUrl: fc.webUrl(),
+            notificationEnabled: fc.boolean(),
+          }),
+          async (userData) => {
+            const createdUserId = await storageAdapter.createUser(userData as UserData);
+
+            // Verify each generated UUID is unique
+            expect(userIds.has(createdUserId)).toBe(false);
+            userIds.add(createdUserId);
+          }
+        ),
+        { numRuns: 10 }
+      );
+    });
+  });
+
+  /**
+   * Property 2: Data Integrity and Field Storage
+   * 
+   * When createUser() is called with valid user data, the required fields
+   * (ntfyFeedUrl, ntfyServerUrl, notificationEnabled) MUST be stored correctly
+   * with automatic timestamps (createdAt, updatedAt).
+   * 
+   * Note: The current implementation only stores ntfy-related fields and timestamps.
+   * Email, name, image, and emailVerified are NOT stored by createUser() - this is
+   * the existing behavior that must be preserved.
+   * 
+   * This property verifies that data integrity is preserved.
+   */
+  describe('Property: Data Integrity', () => {
+    it('should store required fields correctly with timestamps', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            email: fc.emailAddress(),
+            name: fc.string({ minLength: 1, maxLength: 100 }),
+            image: fc.option(fc.webUrl(), { nil: undefined }),
+            emailVerified: fc.option(fc.date(), { nil: null }),
+            ntfyFeedUrl: fc.string(),
+            ntfyServerUrl: fc.webUrl(),
+            notificationEnabled: fc.boolean(),
+          }),
+          async (userData) => {
+            const beforeCreate = new Date();
+            const createdUserId = await storageAdapter.createUser(userData as UserData);
+            const afterCreate = new Date();
+
+            // Retrieve the created user
+            const retrievedUser = await storageAdapter.getUser(createdUserId);
+            expect(retrievedUser).not.toBeNull();
+
+            if (retrievedUser) {
+              // Verify required fields are stored correctly
+              // Note: Current implementation only stores ntfy-related fields
+              expect(retrievedUser.ntfyFeedUrl).toBe(userData.ntfyFeedUrl);
+              expect(retrievedUser.ntfyServerUrl).toBe(userData.ntfyServerUrl);
+              expect(retrievedUser.notificationEnabled).toBe(userData.notificationEnabled);
+
+              // Verify timestamps are set automatically
+              expect(retrievedUser.createdAt).toBeInstanceOf(Date);
+              expect(retrievedUser.updatedAt).toBeInstanceOf(Date);
+
+              // Verify timestamps are within reasonable range
+              expect(retrievedUser.createdAt.getTime()).toBeGreaterThanOrEqual(beforeCreate.getTime());
+              expect(retrievedUser.createdAt.getTime()).toBeLessThanOrEqual(afterCreate.getTime());
+              expect(retrievedUser.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeCreate.getTime());
+              expect(retrievedUser.updatedAt.getTime()).toBeLessThanOrEqual(afterCreate.getTime());
+
+              // Verify createdAt and updatedAt are initially the same
+              expect(retrievedUser.createdAt.getTime()).toBe(retrievedUser.updatedAt.getTime());
+            }
+          }
+        ),
+        { numRuns: 20 }
+      );
+    });
+
+    it('should handle required fields correctly', async () => {
+      // Test with typical user data (no userId - non-OAuth scenario)
+      const userData = {
+        email: 'test@example.com',
+        name: 'Test User',
+        image: undefined,
+        emailVerified: null,
+        ntfyFeedUrl: '',
+        ntfyServerUrl: 'https://ntfy.sh',
+        notificationEnabled: true,
+      };
+
+      const userId = await storageAdapter.createUser(userData as UserData);
+      const user = await storageAdapter.getUser(userId);
+
+      expect(user).not.toBeNull();
+      expect(user?.ntfyFeedUrl).toBe('');
+      expect(user?.ntfyServerUrl).toBe('https://ntfy.sh');
+      expect(user?.notificationEnabled).toBe(true);
+    });
+  });
+
+  /**
+   * Property 3: Foreign Key Constraints
+   * 
+   * When a user is created, accounts can be created with the generated userId,
+   * and foreign key constraints are enforced.
+   * 
+   * This property verifies that data integrity constraints are preserved.
+   */
+  describe('Property: Foreign Key Constraints', () => {
+    it('should allow account creation with generated userId', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            email: fc.emailAddress(),
+            name: fc.string({ minLength: 1, maxLength: 100 }),
+            image: fc.option(fc.webUrl(), { nil: undefined }),
+            emailVerified: fc.option(fc.date(), { nil: null }),
+            ntfyFeedUrl: fc.string(),
+            ntfyServerUrl: fc.webUrl(),
+            notificationEnabled: fc.boolean(),
+          }),
+          fc.constantFrom('gas' as const, 'water' as const, 'electricity' as const, 'trash' as const),
+          fc.constantFrom('te.ge', 'telmico', 'gwp', 'other'),
+          fc.string({ minLength: 1, maxLength: 100 }),
+          async (userData, providerType, providerName: string, accountNumber: string) => {
+            // Create user (generates UUID)
+            const userId = await storageAdapter.createUser(userData as UserData);
+
+            // Create account with the generated userId
+            const accountId = await storageAdapter.createAccount({
+              userId,
+              providerType,
+              providerName,
+              accountNumber,
+              enabled: true,
+            });
+
+            // Verify account was created successfully
+            const account = await storageAdapter.getAccount(accountId);
+            expect(account).not.toBeNull();
+            expect(account?.userId).toBe(userId);
+            expect(account?.providerType).toBe(providerType);
+          }
+        ),
+        { numRuns: 10 }
+      );
+    });
+
+    it('should enforce foreign key constraints for invalid userId', async () => {
+      const nonExistentUserId = randomUUID();
+
+      // Attempt to create account with non-existent userId
+      await expect(
+        storageAdapter.createAccount({
+          userId: nonExistentUserId,
           providerType: 'gas',
-          supportedRegions: ['Tbilisi'],
-          accountNumberFormat: '12 digits',
-        },
-      ]),
+          providerName: 'te.ge',
+          accountNumber: 'encrypted_123',
+          enabled: true,
+        })
+      ).rejects.toThrow();
     });
   });
-  
+
   /**
-   * Test Case 1: Health Route Preservation
+   * Property 4: Idempotency - No Duplicate Users
    * 
-   * The /api/health route already calls ensureInitialized() and should continue
-   * to work exactly as before. This test verifies the route returns successful
-   * health status and includes expected fields.
+   * When createUser() is called multiple times with the same data,
+   * multiple users are created (each with unique userId).
    * 
-   * Expected: Test PASSES on both unfixed and fixed code
+   * Note: The current system doesn't prevent duplicate users - this is
+   * the existing behavior that must be preserved.
    */
-  it('GET /api/health should continue to work exactly as before', async () => {
-    const request = new NextRequest('http://localhost:3000/api/health', {
-      method: 'GET',
+  describe('Property: User Creation Behavior', () => {
+    it('should create separate users for each createUser call', async () => {
+      const userData = {
+        email: 'duplicate@example.com',
+        name: 'Duplicate User',
+        image: undefined,
+        emailVerified: null,
+        ntfyFeedUrl: '',
+        ntfyServerUrl: 'https://ntfy.sh',
+        notificationEnabled: true,
+      };
+
+      // Create first user
+      const userId1 = await storageAdapter.createUser(userData as UserData);
+      
+      // Create second user with same data
+      const userId2 = await storageAdapter.createUser(userData as UserData);
+
+      // Verify two different users were created
+      expect(userId1).not.toBe(userId2);
+
+      // Verify both users exist
+      const user1 = await storageAdapter.getUser(userId1);
+      const user2 = await storageAdapter.getUser(userId2);
+      expect(user1).not.toBeNull();
+      expect(user2).not.toBeNull();
+      
+      // Verify both have the same ntfy settings (the fields that are actually stored)
+      expect(user1?.ntfyFeedUrl).toBe(userData.ntfyFeedUrl);
+      expect(user2?.ntfyFeedUrl).toBe(userData.ntfyFeedUrl);
+      expect(user1?.ntfyServerUrl).toBe(userData.ntfyServerUrl);
+      expect(user2?.ntfyServerUrl).toBe(userData.ntfyServerUrl);
     });
-
-    const response = await healthGET(request);
-    const data = await response.json();
-
-    // Health route should return 200 or 503 (degraded/unhealthy)
-    expect([200, 503]).toContain(response.status);
-    
-    // Should have expected health check fields
-    expect(data).toHaveProperty('status');
-    expect(data).toHaveProperty('timestamp');
-    expect(data).toHaveProperty('storage');
-    expect(data).toHaveProperty('providers');
-    expect(data).toHaveProperty('environment');
-    
-    // Status should be one of the valid values
-    expect(['healthy', 'degraded', 'unhealthy']).toContain(data.status);
-    
-    // Verify ensureInitialized was called
-    const { ensureInitialized } = require('@/lib/ensure-init');
-    expect(ensureInitialized).toHaveBeenCalled();
   });
 
   /**
-   * Test Case 2: Idempotent Initialization
+   * Property 5: Storage Adapter Consistency
    * 
-   * Calling ensureInitialized() multiple times should be safe and idempotent.
-   * The second and subsequent calls should not re-run migrations or re-initialize services.
+   * All three storage adapters (postgres, sqlite, redis) MUST behave identically
+   * for user creation operations.
    * 
-   * Expected: Test PASSES on both unfixed and fixed code
+   * This property verifies adapter consistency is preserved.
+   * 
+   * Note: This test only runs for SQLite in this suite. Full adapter testing
+   * would require setting up all three backends.
    */
-  it('ensureInitialized() should be idempotent (safe to call multiple times)', async () => {
-    const { ensureInitialized } = require('@/lib/ensure-init');
-    
-    // Call ensureInitialized multiple times
-    await ensureInitialized();
-    await ensureInitialized();
-    await ensureInitialized();
-    
-    // All calls should complete without errors
-    // The mock ensures this works - in real code, the function tracks initialization state
-    expect(ensureInitialized).toHaveBeenCalledTimes(3);
-    
-    // Verify we can still access services after multiple initialization calls
-    const { getStorageAdapter } = require('@/lib/storage/factory');
-    const { getProviderRegistry } = require('@/lib/providers/factory');
-    
-    const storageAdapter = getStorageAdapter();
-    const providerRegistry = getProviderRegistry();
-    
-    // Should be able to call methods on these services
-    expect(storageAdapter).toBeDefined();
-    expect(providerRegistry).toBeDefined();
-    expect(typeof storageAdapter.getMigrationStatus).toBe('function');
-    expect(typeof providerRegistry.listProviders).toBe('function');
-  });
+  describe('Property: Storage Adapter Consistency', () => {
+    it('should maintain consistent behavior across adapter implementations', async () => {
+      const userData = {
+        email: 'consistency@example.com',
+        name: 'Consistency Test',
+        image: undefined,
+        emailVerified: null,
+        ntfyFeedUrl: '',
+        ntfyServerUrl: 'https://ntfy.sh',
+        notificationEnabled: true,
+      };
 
-  /**
-   * Property-Based Test: Multiple Health Route Calls
-   * 
-   * This property test verifies that calling the health route multiple times
-   * produces consistent results and doesn't cause issues with initialization.
-   * 
-   * Expected: Test PASSES on both unfixed and fixed code
-   */
-  it('property: health route should work consistently across multiple calls', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 10 }), // Number of sequential calls
-        async (numCalls) => {
-          const results = [];
-          
-          // Make multiple calls to the health route
-          for (let i = 0; i < numCalls; i++) {
-            const request = new NextRequest('http://localhost:3000/api/health', {
-              method: 'GET',
-            });
-            
-            const response = await healthGET(request);
-            const data = await response.json();
-            
-            results.push({
-              status: response.status,
-              hasRequiredFields: 
-                data.status !== undefined &&
-                data.timestamp !== undefined &&
-                data.storage !== undefined &&
-                data.providers !== undefined &&
-                data.environment !== undefined,
-            });
-          }
-          
-          // All calls should succeed (200 or 503)
-          const allSuccessful = results.every(r => [200, 503].includes(r.status));
-          
-          // All calls should have required fields
-          const allHaveFields = results.every(r => r.hasRequiredFields);
-          
-          return allSuccessful && allHaveFields;
-        }
-      ),
-      {
-        numRuns: 10,
-        verbose: true,
-      }
-    );
-  });
+      // Create user
+      const userId = await storageAdapter.createUser(userData as UserData);
 
-  /**
-   * Property-Based Test: Concurrent Initialization Calls
-   * 
-   * This property test verifies that concurrent calls to ensureInitialized()
-   * are handled correctly and don't cause race conditions or duplicate initialization.
-   * 
-   * Expected: Test PASSES on both unfixed and fixed code
-   */
-  it('property: concurrent ensureInitialized() calls should be safe', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 2, max: 5 }), // Number of concurrent calls
-        async (numConcurrentCalls) => {
-          const { ensureInitialized } = require('@/lib/ensure-init');
-          
-          // Make concurrent calls to ensureInitialized
-          const promises = Array.from({ length: numConcurrentCalls }, () => 
-            ensureInitialized()
-          );
-          
-          // All should complete without errors
-          await Promise.all(promises);
-          
-          // Verify services are accessible after concurrent initialization
-          const { getStorageAdapter } = require('@/lib/storage/factory');
-          const { getProviderRegistry } = require('@/lib/providers/factory');
-          
-          const storageAdapter = getStorageAdapter();
-          const providerRegistry = getProviderRegistry();
-          
-          return storageAdapter !== undefined && providerRegistry !== undefined;
-        }
-      ),
-      {
-        numRuns: 5,
-        verbose: true,
-      }
-    );
-  });
+      // Verify UUID format (all adapters should generate valid UUIDs)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      expect(userId).toMatch(uuidRegex);
 
-  /**
-   * Property-Based Test: Health Route After Multiple Initializations
-   * 
-   * This property test verifies that the health route continues to work correctly
-   * even after multiple explicit initialization calls, confirming that idempotent
-   * initialization doesn't break the health check functionality.
-   * 
-   * Expected: Test PASSES on both unfixed and fixed code
-   */
-  it('property: health route should work after multiple initialization calls', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 5 }), // Number of initialization calls before health check
-        async (numInitCalls) => {
-          const { ensureInitialized } = require('@/lib/ensure-init');
-          
-          // Call ensureInitialized multiple times
-          for (let i = 0; i < numInitCalls; i++) {
-            await ensureInitialized();
-          }
-          
-          // Now call the health route
-          const request = new NextRequest('http://localhost:3000/api/health', {
-            method: 'GET',
-          });
-          
-          const response = await healthGET(request);
-          const data = await response.json();
-          
-          // Should still work correctly
-          const isValidStatus = [200, 503].includes(response.status);
-          const hasRequiredFields = 
-            data.status !== undefined &&
-            data.timestamp !== undefined &&
-            data.storage !== undefined &&
-            data.providers !== undefined &&
-            data.environment !== undefined;
-          
-          return isValidStatus && hasRequiredFields;
-        }
-      ),
-      {
-        numRuns: 10,
-        verbose: true,
-      }
-    );
+      // Verify user can be retrieved
+      const user = await storageAdapter.getUser(userId);
+      expect(user).not.toBeNull();
+      expect(user?.userId).toBe(userId);
+
+      // Verify required fields are present
+      expect(user?.ntfyFeedUrl).toBe(userData.ntfyFeedUrl);
+      expect(user?.ntfyServerUrl).toBe(userData.ntfyServerUrl);
+      expect(user?.notificationEnabled).toBe(userData.notificationEnabled);
+      expect(user?.createdAt).toBeInstanceOf(Date);
+      expect(user?.updatedAt).toBeInstanceOf(Date);
+    });
   });
 });

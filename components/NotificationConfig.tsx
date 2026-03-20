@@ -38,6 +38,11 @@ export default function NotificationConfig() {
     ntfyFeedUrl: "",
     ntfyServerUrl: "https://ntfy.sh",
   });
+  const [telegramLinked, setTelegramLinked] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const [linkBotUsername, setLinkBotUsername] = useState<string | null>(null);
+  const [isGeneratingToken, setIsGeneratingToken] = useState(false);
 
   // Load notification configuration
   useEffect(() => {
@@ -63,6 +68,8 @@ export default function NotificationConfig() {
         ntfyFeedUrl: data.ntfyFeedUrl || "",
         ntfyServerUrl: data.ntfyServerUrl || "https://ntfy.sh",
       });
+      setTelegramLinked(!!data.telegramLinked);
+      setTelegramEnabled(!!data.telegramEnabled);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load configuration");
     } finally {
@@ -172,7 +179,7 @@ export default function NotificationConfig() {
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Notification Settings</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Configure ntfy.sh notifications to receive alerts about your utility bills
+          Configure Telegram notifications to receive alerts about your utility bills
         </p>
       </div>
 
@@ -198,8 +205,12 @@ export default function NotificationConfig() {
         </div>
       )}
 
-      {/* Configuration Form */}
-      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+      {/* Configuration Form (ntfy.sh — collapsed by default) */}
+      <details className="rounded-lg border border-gray-200 bg-white shadow-sm">
+        <summary className="cursor-pointer p-6 text-lg font-semibold text-gray-400 hover:text-gray-700">
+          ntfy.sh Configuration (optional)
+        </summary>
+      <div className="px-6 pb-6">
         {!isEditing && hasConfiguration ? (
           // Display mode
           <div className="space-y-4">
@@ -421,56 +432,96 @@ export default function NotificationConfig() {
           </form>
         )}
       </div>
+      </details>
 
-      {/* Subscription Instructions */}
-      <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
-        <h3 className="text-lg font-semibold text-blue-900 mb-3 flex items-center gap-2">
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth="1.5"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"
-            />
-          </svg>
-          How to Subscribe to Notifications
+      {/* Telegram Bot */}
+      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <span className="text-2xl">📬</span>
+          Telegram Notifications
         </h3>
-        <div className="space-y-4 text-sm text-blue-900">
-          <div>
-            <h4 className="font-semibold mb-2">📱 Mobile App (Recommended)</h4>
-            <ol className="list-decimal list-inside space-y-1 ml-2">
-              <li>Download the ntfy.sh app from the App Store or Google Play</li>
-              <li>Open the app and tap the "+" button to add a subscription</li>
-              <li>Enter your topic name from the Feed URL above (the part after the last /)</li>
-              <li>If using a self-hosted server, change the server URL in settings</li>
-              <li>You'll receive push notifications when bills are due!</li>
-            </ol>
-          </div>
 
-          <div>
-            <h4 className="font-semibold mb-2">🌐 Web Browser</h4>
-            <ol className="list-decimal list-inside space-y-1 ml-2">
-              <li>Visit your Feed URL in a web browser</li>
-              <li>Click "Subscribe" and allow notifications when prompted</li>
-              <li>Keep the tab open or enable background notifications</li>
-            </ol>
+        {telegramLinked ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
+                Linked
+              </span>
+              <span className="text-sm text-gray-600">
+                {telegramEnabled ? "Notifications active" : "Notifications paused"}
+              </span>
+            </div>
+            <p className="text-sm text-gray-500">
+              Manage via Telegram: send /stop, /resume, or /unlink to the bot.
+            </p>
           </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Link your Telegram account to receive balance notifications via Telegram bot.
+            </p>
 
-          <div>
-            <h4 className="font-semibold mb-2">💡 Tips</h4>
-            <ul className="list-disc list-inside space-y-1 ml-2">
-              <li>Choose a unique, hard-to-guess topic name for security</li>
-              <li>You can subscribe to the same topic on multiple devices</li>
-              <li>Use the "Send Test Notification" button above to verify your setup</li>
-            </ul>
+            {linkToken ? (
+              <div className="space-y-3">
+                <div className="rounded-md bg-gray-50 p-4">
+                  <p className="text-sm font-medium text-gray-700 mb-2">
+                    Send this to{" "}
+                    {linkBotUsername ? (
+                      <a
+                        href={`https://t.me/${linkBotUsername}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        @{linkBotUsername}
+                      </a>
+                    ) : (
+                      "the bot"
+                    )}{" "}
+                    on Telegram:
+                  </p>
+                  <code className="block bg-white border border-gray-200 rounded px-3 py-2 text-sm font-mono break-all select-all">
+                    /link {linkToken}
+                  </code>
+                </div>
+                <p className="text-xs text-gray-500">Token expires in 15 minutes.</p>
+              </div>
+            ) : (
+              <button
+                onClick={async () => {
+                  setIsGeneratingToken(true);
+                  try {
+                    const res = await fetch("/api/telegram/link-token", { method: "POST" });
+                    if (!res.ok) throw new Error("Failed to generate token");
+                    const data = await res.json();
+                    setLinkToken(data.token);
+                    setLinkBotUsername(data.botUsername);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Failed to generate token");
+                  } finally {
+                    setIsGeneratingToken(false);
+                  }
+                }}
+                disabled={isGeneratingToken}
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                {isGeneratingToken ? "Generating..." : "Generate Telegram Link Token"}
+              </button>
+            )}
           </div>
-        </div>
+        )}
       </div>
+
+      {/* ntfy.sh instructions — collapsed by default */}
+      <details className="rounded-lg border border-gray-200 bg-gray-50">
+        <summary className="cursor-pointer p-4 text-sm font-medium text-gray-600 hover:text-gray-900">
+          Advanced: ntfy.sh notification setup (optional)
+        </summary>
+        <div className="px-6 pb-6 pt-2 text-sm text-gray-600 space-y-2">
+          <p>ntfy.sh is an alternative notification channel. Most users should use Telegram instead.</p>
+          <p>If you want to use ntfy.sh, configure the Feed URL and Server URL above, then subscribe via the ntfy.sh app or web interface.</p>
+        </div>
+      </details>
     </div>
   );
 }

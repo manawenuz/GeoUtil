@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { TelegramService } from './telegram-service';
 
 /**
  * Notification payload for ntfy.sh
@@ -130,6 +131,19 @@ export class NotificationService {
     const lastFour = accountNumber.slice(-4);
     const masked = '*'.repeat(Math.min(accountNumber.length - 4, 8));
     return `${masked}${lastFour}`;
+  }
+
+  /**
+   * Send a notification via Telegram
+   */
+  async sendTelegramNotification(chatId: string, message: string): Promise<boolean> {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+      console.error('TELEGRAM_BOT_TOKEN not configured');
+      return false;
+    }
+    const telegram = new TelegramService(botToken);
+    return telegram.sendMessage(chatId, message);
   }
 
   /**

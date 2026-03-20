@@ -17,6 +17,20 @@ export interface User {
   ntfyFeedUrl: string; // encrypted
   ntfyServerUrl: string; // default: https://ntfy.sh
   notificationEnabled: boolean;
+  telegramChatId?: string;
+  telegramEnabled: boolean;
+  notificationChannel: 'ntfy' | 'telegram' | 'both';
+}
+
+/**
+ * Telegram link token - short-lived token for linking Telegram account
+ */
+export interface TelegramLinkToken {
+  token: string;
+  userId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  used: boolean;
 }
 
 /**
@@ -95,7 +109,12 @@ export interface MigrationStatus {
 /**
  * Partial data types for create/update operations
  */
-export type UserData = Omit<User, 'userId' | 'createdAt' | 'updatedAt'>;
+export type UserData = Omit<User, 'createdAt' | 'updatedAt' | 'telegramChatId' | 'telegramEnabled' | 'notificationChannel'> & {
+  userId?: string;
+  telegramChatId?: string;
+  telegramEnabled?: boolean;
+  notificationChannel?: 'ntfy' | 'telegram' | 'both';
+};
 export type AccountData = Omit<Account, 'accountId' | 'createdAt' | 'updatedAt'>;
 export type BalanceData = Omit<Balance, 'balanceId'>;
 export type NotificationData = Omit<Notification, 'notificationId'>;
@@ -251,6 +270,18 @@ export interface StorageAdapter {
    */
   recordCheckAttempt(accountId: string, success: boolean, error?: string): Promise<void>;
   
+  // ===== Telegram Link Token Operations =====
+
+  createTelegramLinkToken(userId: string, token: string, expiresAt: Date): Promise<void>;
+  getTelegramLinkToken(token: string): Promise<TelegramLinkToken | null>;
+  markTelegramLinkTokenUsed(token: string): Promise<void>;
+  cleanExpiredTelegramLinkTokens(): Promise<void>;
+
+  // ===== User Lookup =====
+
+  getUserByTelegramChatId(chatId: string): Promise<User | null>;
+  getAllUserIds(): Promise<string[]>;
+
   // ===== Migration Operations =====
   
   /**

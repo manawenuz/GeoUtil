@@ -55,6 +55,18 @@ export interface BalanceResult {
    * May contain HTML or JSON depending on provider
    */
   rawResponse?: string;
+  
+  /**
+   * HTTP status code from the provider response
+   * Only present when an HTTP request was made
+   */
+  httpStatus?: number;
+  
+  /**
+   * Message from the provider API
+   * Only present when the provider returns a message field
+   */
+  apiMessage?: string;
 }
 
 /**

@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -12,6 +13,14 @@ import Link from "next/link";
  * Requirements: 14.2, 14.13
  */
 export default function AuthErrorPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
+      <AuthErrorContent />
+    </Suspense>
+  );
+}
+
+function AuthErrorContent() {
   const searchParams = useSearchParams();
   const error = searchParams.get("error");
 

@@ -10,6 +10,7 @@ import {
   BalanceData,
   Notification,
   NotificationData,
+  TelegramLinkToken,
   MigrationStatus,
 } from './types';
 
@@ -56,27 +57,33 @@ export class SQLiteAdapter implements StorageAdapter {
   // ===== User Operations =====
 
   async createUser(userData: UserData): Promise<string> {
-    const userId = randomUUID();
-    const now = new Date().toISOString();
+      const userId = userData.userId || randomUUID();
+      const now = new Date().toISOString();
 
-    this.db.prepare(
-      `INSERT INTO users (user_id, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(
-      userId,
-      now,
-      now,
-      userData.ntfyFeedUrl,
-      userData.ntfyServerUrl,
-      userData.notificationEnabled ? 1 : 0
-    );
+      this.db.prepare(
+        `INSERT INTO users (user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        userId,
+        userData.email,
+        userData.name,
+        userData.image || null,
+        userData.emailVerified ? userData.emailVerified.toISOString() : null,
+        now,
+        now,
+        userData.ntfyFeedUrl,
+        userData.ntfyServerUrl,
+        userData.notificationEnabled ? 1 : 0
+      );
 
-    return userId;
-  }
+      return userId;
+    }
 
   async getUser(userId: string): Promise<User | null> {
     const row = this.db.prepare(
-      `SELECT user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
+      `SELECT user_id, email, name, image, email_verified, created_at, updated_at,
+              ntfy_feed_url, ntfy_server_url, notification_enabled,
+              telegram_chat_id, telegram_enabled, notification_channel
        FROM users
        WHERE user_id = ?`
     ).get(userId) as any;
@@ -85,17 +92,24 @@ export class SQLiteAdapter implements StorageAdapter {
       return null;
     }
 
+    return this.mapRowToUser(row);
+  }
+
+  private mapRowToUser(row: Record<string, unknown>): User {
     return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified ? new Date(row.email_verified) : null,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled === 1,
+      userId: row.user_id as string,
+      email: row.email as string,
+      name: row.name as string,
+      image: row.image as string | undefined,
+      emailVerified: row.email_verified ? new Date(row.email_verified as string) : null,
+      createdAt: new Date(row.created_at as string),
+      updatedAt: new Date(row.updated_at as string),
+      ntfyFeedUrl: row.ntfy_feed_url as string,
+      ntfyServerUrl: row.ntfy_server_url as string,
+      notificationEnabled: (row.notification_enabled as number) === 1,
+      telegramChatId: row.telegram_chat_id as string | undefined,
+      telegramEnabled: (row.telegram_enabled as number) === 1,
+      notificationChannel: (row.notification_channel as 'ntfy' | 'telegram' | 'both') ?? 'ntfy',
     };
   }
 
@@ -114,6 +128,18 @@ export class SQLiteAdapter implements StorageAdapter {
     if (userData.notificationEnabled !== undefined) {
       updates.push('notification_enabled = ?');
       values.push(userData.notificationEnabled ? 1 : 0);
+    }
+    if (userData.telegramChatId !== undefined) {
+      updates.push('telegram_chat_id = ?');
+      values.push(userData.telegramChatId);
+    }
+    if (userData.telegramEnabled !== undefined) {
+      updates.push('telegram_enabled = ?');
+      values.push(userData.telegramEnabled ? 1 : 0);
+    }
+    if (userData.notificationChannel !== undefined) {
+      updates.push('notification_channel = ?');
+      values.push(userData.notificationChannel);
     }
 
     if (updates.length === 0) {
@@ -511,94 +537,41 @@ export class SQLiteAdapter implements StorageAdapter {
       userData.notificationEnabled ? 1 : 0
     );
 
-    return {
-      userId,
-      email: userData.email,
-      name: userData.name,
-      image: userData.image,
-      emailVerified: userData.emailVerified,
-      createdAt: new Date(now),
-      updatedAt: new Date(now),
-      ntfyFeedUrl: userData.ntfyFeedUrl,
-      ntfyServerUrl: userData.ntfyServerUrl,
-      notificationEnabled: userData.notificationEnabled,
-    };
+    const user = await this.getAuthUser(userId);
+    if (!user) throw new Error('Failed to create user');
+    return user;
   }
 
   async getAuthUser(userId: string): Promise<import('../auth-adapter').AuthUser | null> {
     const row = this.db.prepare(
-      `SELECT user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
-       FROM users
-       WHERE user_id = ?`
+      `SELECT user_id, email, name, image, email_verified, created_at, updated_at,
+              ntfy_feed_url, ntfy_server_url, notification_enabled,
+              telegram_chat_id, telegram_enabled, notification_channel
+       FROM users WHERE user_id = ?`
     ).get(userId) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified ? new Date(row.email_verified) : null,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled === 1,
-    };
+    return row ? this.mapRowToUser(row) : null;
   }
 
   async getAuthUserByEmail(email: string): Promise<import('../auth-adapter').AuthUser | null> {
     const row = this.db.prepare(
-      `SELECT user_id, email, name, image, email_verified, created_at, updated_at, ntfy_feed_url, ntfy_server_url, notification_enabled
-       FROM users
-       WHERE email = ?`
+      `SELECT user_id, email, name, image, email_verified, created_at, updated_at,
+              ntfy_feed_url, ntfy_server_url, notification_enabled,
+              telegram_chat_id, telegram_enabled, notification_channel
+       FROM users WHERE email = ?`
     ).get(email) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    return {
-      userId: row.email,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified ? new Date(row.email_verified) : null,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled === 1,
-    };
+    return row ? this.mapRowToUser(row) : null;
   }
 
   async getAuthUserByAccount(provider: string, providerAccountId: string): Promise<import('../auth-adapter').AuthUser | null> {
     const row = this.db.prepare(
-      `SELECT u.user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at, u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled
+      `SELECT u.user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at,
+              u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled,
+              u.telegram_chat_id, u.telegram_enabled, u.notification_channel
        FROM users u
        INNER JOIN auth_accounts a ON u.user_id = a.user_id
        WHERE a.provider = ? AND a.provider_account_id = ?`
     ).get(provider, providerAccountId) as any;
-
-    if (!row) {
-      return null;
-    }
-
-    return {
-      userId: row.user_id,
-      email: row.email,
-      name: row.name,
-      image: row.image,
-      emailVerified: row.email_verified ? new Date(row.email_verified) : null,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
-      ntfyFeedUrl: row.ntfy_feed_url,
-      ntfyServerUrl: row.ntfy_server_url,
-      notificationEnabled: row.notification_enabled === 1,
-    };
+    return row ? this.mapRowToUser(row) : null;
   }
 
   async updateAuthUser(userId: string, userData: Partial<import('../auth-adapter').AuthUser>): Promise<import('../auth-adapter').AuthUser> {
@@ -719,9 +692,11 @@ export class SQLiteAdapter implements StorageAdapter {
 
   async getSessionAndUser(sessionToken: string): Promise<{ session: import('../auth-adapter').AuthSession; user: import('../auth-adapter').AuthUser } | null> {
     const row = this.db.prepare(
-      `SELECT 
+      `SELECT
          s.id, s.session_token, s.user_id, s.expires,
-         u.user_id as u_user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at, u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled
+         u.user_id as u_user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at,
+         u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled,
+         u.telegram_chat_id, u.telegram_enabled, u.notification_channel
        FROM auth_sessions s
        INNER JOIN users u ON s.user_id = u.user_id
        WHERE s.session_token = ? AND datetime(s.expires) > datetime('now')`
@@ -738,18 +713,7 @@ export class SQLiteAdapter implements StorageAdapter {
         userId: row.user_id,
         expires: new Date(row.expires),
       },
-      user: {
-        userId: row.u_user_id,
-        email: row.email,
-        name: row.name,
-        image: row.image,
-        emailVerified: row.email_verified ? new Date(row.email_verified) : null,
-        createdAt: new Date(row.created_at),
-        updatedAt: new Date(row.updated_at),
-        ntfyFeedUrl: row.ntfy_feed_url,
-        ntfyServerUrl: row.ntfy_server_url,
-        notificationEnabled: row.notification_enabled === 1,
-      },
+      user: this.mapRowToUser({ ...row, user_id: row.u_user_id }),
     };
   }
 
@@ -850,6 +814,57 @@ export class SQLiteAdapter implements StorageAdapter {
       token: row.token,
       expires: new Date(row.expires),
     };
+  }
+
+  // ===== Telegram Link Token Operations =====
+
+  async createTelegramLinkToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    this.db.prepare(
+      `INSERT INTO telegram_link_tokens (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`
+    ).run(token, userId, new Date().toISOString(), expiresAt.toISOString());
+  }
+
+  async getTelegramLinkToken(token: string): Promise<TelegramLinkToken | null> {
+    const row = this.db.prepare(
+      `SELECT token, user_id, created_at, expires_at, used
+       FROM telegram_link_tokens
+       WHERE token = ? AND used = 0 AND datetime(expires_at) > datetime('now')`
+    ).get(token) as any;
+    if (!row) return null;
+    return {
+      token: row.token,
+      userId: row.user_id,
+      createdAt: new Date(row.created_at),
+      expiresAt: new Date(row.expires_at),
+      used: row.used === 1,
+    };
+  }
+
+  async markTelegramLinkTokenUsed(token: string): Promise<void> {
+    this.db.prepare(`UPDATE telegram_link_tokens SET used = 1 WHERE token = ?`).run(token);
+  }
+
+  async cleanExpiredTelegramLinkTokens(): Promise<void> {
+    this.db.prepare(
+      `DELETE FROM telegram_link_tokens WHERE datetime(expires_at) < datetime('now') OR used = 1`
+    ).run();
+  }
+
+  // ===== User Lookup =====
+
+  async getUserByTelegramChatId(chatId: string): Promise<User | null> {
+    const row = this.db.prepare(
+      `SELECT user_id, email, name, image, email_verified, created_at, updated_at,
+              ntfy_feed_url, ntfy_server_url, notification_enabled,
+              telegram_chat_id, telegram_enabled, notification_channel
+       FROM users WHERE telegram_chat_id = ?`
+    ).get(chatId) as any;
+    return row ? this.mapRowToUser(row) : null;
+  }
+
+  async getAllUserIds(): Promise<string[]> {
+    const rows = this.db.prepare(`SELECT user_id FROM users`).all() as any[];
+    return rows.map(row => row.user_id);
   }
 
   /**

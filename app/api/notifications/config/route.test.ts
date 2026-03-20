@@ -82,6 +82,9 @@ describe("/api/notifications/config", () => {
         ntfyFeedUrl: "https://ntfy.sh/my-topic",
         ntfyServerUrl: "https://ntfy.sh",
         notificationEnabled: true,
+        telegramLinked: false,
+        telegramEnabled: false,
+        notificationChannel: "ntfy",
       });
       expect(mockStorageAdapter.getUser).toHaveBeenCalledWith("user-123");
       expect(mockEncryptionService.decrypt).toHaveBeenCalledWith("encrypted:https://ntfy.sh/my-topic");

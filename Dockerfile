@@ -1,4 +1,4 @@
-FROM node:18-alpine AS base
+FROM node:20-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -15,6 +15,16 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED 1
+
+# Dummy env vars for Next.js static page generation at build time
+# These are NOT used at runtime - real values come from docker-compose environment
+ENV STORAGE_BACKEND=sqlite \
+    ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+    NEXTAUTH_SECRET=build-placeholder \
+    NEXTAUTH_URL=http://localhost:3000 \
+    GOOGLE_CLIENT_ID=build-placeholder \
+    GOOGLE_CLIENT_SECRET=build-placeholder \
+    CRON_SECRET=build-placeholder
 
 RUN npm run build
 

@@ -7,12 +7,13 @@ yarn-error.log*
 # Testing
 coverage
 .nyc_output
-*.test.ts
-*.test.tsx
-*.spec.ts
-*.spec.tsx
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
 __tests__
 __mocks__
+test
 
 # Next.js
 .next

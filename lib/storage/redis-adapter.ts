@@ -11,6 +11,7 @@ import {
   Notification,
   NotificationData,
   OverdueTracking,
+  TelegramLinkToken,
   MigrationStatus,
 } from './types';
 
@@ -40,16 +41,23 @@ export class RedisAdapter implements StorageAdapter {
   // ===== User Operations =====
 
   async createUser(userData: UserData): Promise<string> {
-    const userId = randomUUID();
+    const userId = userData.userId || randomUUID();
     const now = new Date().toISOString();
 
     await this.redis.hset(`user:${userId}`, {
       userId,
+      email: userData.email,
+      name: userData.name,
+      image: userData.image || '',
+      emailVerified: userData.emailVerified ? userData.emailVerified.toISOString() : '',
       createdAt: now,
       updatedAt: now,
       ntfyFeedUrl: userData.ntfyFeedUrl,
       ntfyServerUrl: userData.ntfyServerUrl,
       notificationEnabled: userData.notificationEnabled ? '1' : '0',
+      telegramChatId: userData.telegramChatId || '',
+      telegramEnabled: (userData.telegramEnabled ?? false) ? '1' : '0',
+      notificationChannel: userData.notificationChannel || 'ntfy',
     });
 
     return userId;
@@ -57,22 +65,29 @@ export class RedisAdapter implements StorageAdapter {
 
   async getUser(userId: string): Promise<User | null> {
     const data = await this.redis.hgetall(`user:${userId}`);
-    
+
     if (!data || Object.keys(data).length === 0) {
       return null;
     }
 
+    return this.mapDataToUser(data);
+  }
+
+  private mapDataToUser(data: Record<string, unknown>): User {
     return {
       userId: data.userId as string,
       email: data.email as string,
       name: data.name as string,
-      image: data.image as string | undefined,
+      image: (data.image as string) || undefined,
       emailVerified: data.emailVerified ? new Date(data.emailVerified as string) : null,
       createdAt: new Date(data.createdAt as string),
       updatedAt: new Date(data.updatedAt as string),
       ntfyFeedUrl: data.ntfyFeedUrl as string,
       ntfyServerUrl: data.ntfyServerUrl as string,
       notificationEnabled: data.notificationEnabled === '1',
+      telegramChatId: (data.telegramChatId as string) || undefined,
+      telegramEnabled: data.telegramEnabled === '1',
+      notificationChannel: (data.notificationChannel as 'ntfy' | 'telegram' | 'both') || 'ntfy',
     };
   }
 
@@ -89,6 +104,19 @@ export class RedisAdapter implements StorageAdapter {
     }
     if (userData.notificationEnabled !== undefined) {
       updates.notificationEnabled = userData.notificationEnabled ? '1' : '0';
+    }
+    if (userData.telegramChatId !== undefined) {
+      updates.telegramChatId = userData.telegramChatId;
+      // Maintain reverse index for getUserByTelegramChatId
+      if (userData.telegramChatId) {
+        await this.redis.set(`telegram_chat:${userData.telegramChatId}`, userId);
+      }
+    }
+    if (userData.telegramEnabled !== undefined) {
+      updates.telegramEnabled = userData.telegramEnabled ? '1' : '0';
+    }
+    if (userData.notificationChannel !== undefined) {
+      updates.notificationChannel = userData.notificationChannel;
     }
 
     await this.redis.hset(`user:${userId}`, updates);
@@ -441,6 +469,63 @@ export class RedisAdapter implements StorageAdapter {
   }
 
   // ===== Migration Operations =====
+
+  // ===== Telegram Link Token Operations =====
+
+  async createTelegramLinkToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    const ttlSeconds = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+    await this.redis.set(`telegram_token:${token}`, JSON.stringify({
+      token, userId, createdAt: new Date().toISOString(), expiresAt: expiresAt.toISOString(), used: false,
+    }), { ex: ttlSeconds });
+  }
+
+  async getTelegramLinkToken(token: string): Promise<TelegramLinkToken | null> {
+    const data = await this.redis.get(`telegram_token:${token}`);
+    if (!data) return null;
+    const parsed = typeof data === 'string' ? JSON.parse(data) : data as Record<string, unknown>;
+    if (parsed.used) return null;
+    return {
+      token: parsed.token as string,
+      userId: parsed.userId as string,
+      createdAt: new Date(parsed.createdAt as string),
+      expiresAt: new Date(parsed.expiresAt as string),
+      used: parsed.used as boolean,
+    };
+  }
+
+  async markTelegramLinkTokenUsed(token: string): Promise<void> {
+    await this.redis.del(`telegram_token:${token}`);
+  }
+
+  async cleanExpiredTelegramLinkTokens(): Promise<void> {
+    // Redis TTL handles expiration automatically
+  }
+
+  // ===== User Lookup =====
+
+  async getUserByTelegramChatId(chatId: string): Promise<User | null> {
+    const userId = await this.redis.get(`telegram_chat:${chatId}`) as string | null;
+    if (!userId) return null;
+    return this.getUser(userId);
+  }
+
+  async getAllUserIds(): Promise<string[]> {
+    // Scan for all user keys
+    const userIds: string[] = [];
+    let cursor = 0;
+    do {
+      const [nextCursor, keys] = await this.redis.scan(cursor, { match: 'user:*', count: 100 });
+      cursor = nextCursor;
+      for (const key of keys) {
+        const k = key as string;
+        // Only match user:{uuid} not user:{uuid}:accounts
+        if (!k.includes(':accounts') && k.startsWith('user:')) {
+          userIds.push(k.replace('user:', ''));
+        }
+      }
+    } while (cursor !== 0);
+    return userIds;
+  }
 
   async runMigrations(): Promise<void> {
     // For Redis, migrations are minimal since it's schemaless

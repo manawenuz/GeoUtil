@@ -20,7 +20,7 @@ export class TeGeGasAdapter implements ProviderAdapter {
   readonly providerType = 'gas' as const;
   readonly supportedRegions = ['Tbilisi', 'Rustavi', 'Mtskheta'];
 
-  private readonly endpointUrl = 'https://te.ge/api/check-balance';
+  private readonly endpointUrl = 'https://www.te.ge/webpay/';
   private readonly timeout = 30000; // 30 seconds
   private readonly retryConfig: RetryConfig = {
     maxRetries: 3,
@@ -31,19 +31,40 @@ export class TeGeGasAdapter implements ProviderAdapter {
 
   /**
    * Validates te.ge account number format
-   * Account numbers must be exactly 12 digits
+   * Account numbers can be 9 digits (formatted as XXXXXX-XXX) or 12 digits
+   * Accepts with or without dashes/spaces
    */
   validateAccountNumber(accountNumber: string): boolean {
-    const cleaned = accountNumber.replace(/\s/g, '');
-    return /^\d{12}$/.test(cleaned);
+    const cleaned = accountNumber.replace(/[\s-]/g, '');
+    // Accept either 9 digits (XXXXXX-XXX format) or 12 digits
+    return /^\d{9}$/.test(cleaned) || /^\d{12}$/.test(cleaned);
   }
 
   /**
    * Returns the account number format description
    */
   getAccountNumberFormat(): string {
-    return '12 digits';
+    return '9 digits (XXXXXX-XXX) or 12 digits';
   }
+
+  /**
+   * Formats account number for API requests
+   * Converts 9-digit numbers to XXXXXX-XXX format
+   * Leaves 12-digit numbers as-is
+   */
+  private formatAccountNumber(accountNumber: string): string {
+    // Remove all spaces and dashes
+    const cleaned = accountNumber.replace(/[\s-]/g, '');
+
+    // If 9 digits, format as XXXXXX-XXX
+    if (cleaned.length === 9) {
+      return `${cleaned.slice(0, 6)}-${cleaned.slice(6)}`;
+    }
+
+    // Otherwise return cleaned (12 digits or already formatted)
+    return cleaned;
+  }
+
 
   /**
    * Fetches the current balance for a te.ge gas account
@@ -63,8 +84,8 @@ export class TeGeGasAdapter implements ProviderAdapter {
       };
     }
 
-    // Clean account number (remove spaces)
-    const cleanedAccountNumber = accountNumber.replace(/\s/g, '');
+    // Normalize and format account number
+    const formattedAccountNumber = this.formatAccountNumber(accountNumber);
 
     // Attempt to fetch balance with retry logic
     let lastError: string | undefined;
@@ -72,7 +93,7 @@ export class TeGeGasAdapter implements ProviderAdapter {
 
     while (attempt <= this.retryConfig.maxRetries) {
       try {
-        const result = await this.attemptFetchBalance(cleanedAccountNumber);
+        const result = await this.attemptFetchBalance(formattedAccountNumber);
         return result;
       } catch (error) {
         attempt++;
@@ -117,15 +138,17 @@ export class TeGeGasAdapter implements ProviderAdapter {
     const timestamp = new Date();
 
     try {
-      // Make POST request to te.ge endpoint
+      // Make POST request to te.ge webpay endpoint (form-urlencoded)
       const response = await axios.post(
         this.endpointUrl,
-        { accountNumber },
+        `abonentID=${encodeURIComponent(accountNumber)}`,
         {
           timeout: this.timeout,
           headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'GeorgiaUtilityMonitor/1.0',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+            'Origin': 'https://www.te.ge',
+            'Referer': 'https://www.te.ge/webpay/',
           },
         }
       );
@@ -133,9 +156,15 @@ export class TeGeGasAdapter implements ProviderAdapter {
       // Parse HTML response with Cheerio
       const $ = cheerio.load(response.data);
 
-      // Extract balance from HTML
-      // Expected format: <div class="balance">123.45 ₾</div>
-      const balanceText = $('.balance').text().trim();
+      // Extract balance from the "დავალიანება" (debt) row
+      // The page has rows with col-md-4 label and col-md-8 value
+      let balanceText = '';
+      $('.row.MainFontRegular').each((_, row) => {
+        const label = $(row).find('.col-md-4 h3').text().trim();
+        if (label === 'დავალიანება:') {
+          balanceText = $(row).find('.col-md-8 h3').text().trim();
+        }
+      });
 
       if (!balanceText) {
         return {
