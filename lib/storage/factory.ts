@@ -8,10 +8,8 @@
 import { StorageAdapter } from './types';
 import { RedisAdapter } from './redis-adapter';
 import { PostgresAdapter } from './postgres-adapter';
-import { SQLiteAdapter } from './sqlite-adapter';
 import { Redis } from '@upstash/redis';
 import { Pool } from 'pg';
-import Database from 'better-sqlite3';
 
 /**
  * Creates a storage adapter based on the STORAGE_BACKEND environment variable
@@ -84,9 +82,12 @@ function createPostgresAdapter(): PostgresAdapter {
     );
   }
 
-  // Create Postgres connection pool
+  const isVercel = process.env.VERCEL === '1';
   const pool = new Pool({
     connectionString: databaseUrl,
+    max: isVercel ? 3 : 20,
+    idleTimeoutMillis: isVercel ? 10000 : 30000,
+    connectionTimeoutMillis: isVercel ? 5000 : 2000,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
   });
 
@@ -95,13 +96,14 @@ function createPostgresAdapter(): PostgresAdapter {
 
 /**
  * Creates a SQLite storage adapter
+ * Uses dynamic import to avoid bundling better-sqlite3 on Vercel
  */
-function createSQLiteAdapter(): SQLiteAdapter {
+function createSQLiteAdapter(): StorageAdapter {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Database = require('better-sqlite3');
+  const { SQLiteAdapter } = require('./sqlite-adapter');
   const sqlitePath = process.env.SQLITE_PATH || './data/utility_monitor.db';
-  
-  // Create SQLite database instance
   const db = new Database(sqlitePath);
-  
   return new SQLiteAdapter(db);
 }
 

@@ -6,7 +6,7 @@
   "crons": [
     {
       "path": "/api/cron/check-balances",
-      "schedule": "0 */72 * * *"
+      "schedule": "0 */6 * * *"
     }
   ]
 }

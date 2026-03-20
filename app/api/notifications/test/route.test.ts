@@ -12,6 +12,9 @@ jest.mock('@/lib/auth-helpers', () => ({
 jest.mock('@/lib/storage/factory');
 jest.mock('@/lib/encryption');
 jest.mock('@/lib/notification-service');
+jest.mock('@/lib/ensure-init', () => ({
+  ensureInitialized: jest.fn().mockResolvedValue(undefined),
+}));
 
 describe('POST /api/notifications/test', () => {
   const mockSession = {
@@ -38,6 +41,8 @@ describe('POST /api/notifications/test', () => {
       ntfyFeedUrl: 'encrypted-feed-url',
       ntfyServerUrl: 'https://ntfy.sh',
       notificationEnabled: true,
+      telegramEnabled: false,
+      notificationChannel: 'ntfy' as const,
     };
 
     // Mock storage adapter
@@ -116,6 +121,8 @@ describe('POST /api/notifications/test', () => {
       ntfyFeedUrl: '',
       ntfyServerUrl: '',
       notificationEnabled: true,
+      telegramEnabled: false,
+      notificationChannel: 'ntfy' as const,
     };
 
     // Mock storage adapter
@@ -150,6 +157,8 @@ describe('POST /api/notifications/test', () => {
       ntfyFeedUrl: 'encrypted-feed-url',
       ntfyServerUrl: 'https://ntfy.sh',
       notificationEnabled: true,
+      telegramEnabled: false,
+      notificationChannel: 'ntfy' as const,
     };
 
     // Mock storage adapter

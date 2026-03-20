@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
   reactStrictMode: true,
   poweredByHeader: false,
   compress: true,
@@ -18,6 +17,7 @@ const nextConfig = {
     if (isServer) {
       config.externals.push({
         'pg-native': 'commonjs pg-native',
+        'better-sqlite3': 'commonjs better-sqlite3',
       });
     }
     return config;
