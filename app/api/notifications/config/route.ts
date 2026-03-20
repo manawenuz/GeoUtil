@@ -106,69 +106,45 @@ export const POST = withAuth(async (request: NextRequest, session) => {
     await ensureInitialized();
     const userId = session.user.id;
     
-    // Parse request body
     const body = await request.json();
-    const { ntfyFeedUrl, ntfyServerUrl, notificationEnabled } = body;
-
-    // Validate required fields
-    if (!ntfyFeedUrl || !ntfyServerUrl) {
-      return NextResponse.json(
-        {
-          error: "Validation Error",
-          message: "Missing required fields: ntfyFeedUrl, ntfyServerUrl",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Validate ntfy.sh feed URL format (Requirements 2.4, 25.4)
-    if (!isValidNtfyUrl(ntfyFeedUrl)) {
-      return NextResponse.json(
-        {
-          error: "Validation Error",
-          message: "Invalid ntfy.sh feed URL. Must be a valid HTTP or HTTPS URL.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Validate ntfy.sh server URL format (Requirements 2.4, 25.4)
-    if (!isValidNtfyUrl(ntfyServerUrl)) {
-      return NextResponse.json(
-        {
-          error: "Validation Error",
-          message: "Invalid ntfy.sh server URL. Must be a valid HTTP or HTTPS URL.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Encrypt feed URL before storage (Requirement 2.6)
-    const encryptionService = createEncryptionService();
-    const encryptedFeedUrl = encryptionService.encrypt(ntfyFeedUrl);
-
-    // Store configuration via storage adapter
     const storageAdapter = getStorageAdapter();
-    
-    // Check if user exists
     const existingUser = await storageAdapter.getUser(userId);
-    
+
     if (!existingUser) {
       return NextResponse.json(
-        {
-          error: "User Not Found",
-          message: "User not found. Please sign in again.",
-        },
+        { error: "User Not Found", message: "User not found. Please sign in again." },
         { status: 404 }
       );
     }
 
-    // Update user with notification configuration
-    await storageAdapter.updateUser(userId, {
-      ntfyFeedUrl: encryptedFeedUrl,
-      ntfyServerUrl,
-      notificationEnabled: notificationEnabled !== undefined ? notificationEnabled : true,
-    });
+    // Build update object based on what was sent
+    const update: Record<string, unknown> = {};
+
+    // ntfy.sh settings (optional)
+    if (body.ntfyFeedUrl !== undefined && body.ntfyServerUrl !== undefined) {
+      if (!isValidNtfyUrl(body.ntfyFeedUrl) || !isValidNtfyUrl(body.ntfyServerUrl)) {
+        return NextResponse.json(
+          { error: "Validation Error", message: "Invalid ntfy.sh URL format." },
+          { status: 400 }
+        );
+      }
+      const encryptionService = createEncryptionService();
+      update.ntfyFeedUrl = encryptionService.encrypt(body.ntfyFeedUrl);
+      update.ntfyServerUrl = body.ntfyServerUrl;
+    }
+
+    if (body.notificationEnabled !== undefined) update.notificationEnabled = body.notificationEnabled;
+    if (body.telegramEnabled !== undefined) update.telegramEnabled = body.telegramEnabled;
+    if (body.notificationChannel !== undefined) update.notificationChannel = body.notificationChannel;
+
+    // Handle unlink: telegramChatId explicitly set to null
+    if (body.telegramChatId === null) {
+      update.telegramChatId = undefined; // clears it
+      update.telegramEnabled = false;
+      update.notificationChannel = 'ntfy';
+    }
+
+    await storageAdapter.updateUser(userId, update);
 
     return NextResponse.json(
       {

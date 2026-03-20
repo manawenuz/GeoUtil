@@ -111,13 +111,16 @@ export async function POST(request: NextRequest) {
             : 'Get started by adding your utility accounts:',
           '',
           '<b>Commands:</b>',
-          '/add — Add a utility account',
-          '/bills — View current balances',
-          '/check — Force check all balances now',
-          '/remove — Remove an account',
-          '/status — Check account status',
-          '/stop — Pause notifications',
-          '/resume — Resume notifications',
+          '/add - Add a utility account',
+          '/bills - View current balances',
+          '/check - Force check all balances now',
+          '/remove - Remove an account',
+          '/status - Account status',
+          '/whoami - Your profile',
+          '/stop - Pause notifications',
+          '/resume - Resume notifications',
+          '/unlink - Unlink Telegram',
+          '/version - App version',
         ].join('\n'));
         break;
       }
@@ -203,13 +206,34 @@ export async function POST(request: NextRequest) {
 
       case 'whoami': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
+        if (!user) { await telegram.sendMessage(chatId, 'Send /start first.'); break; }
+        const isTelegramOnly = user.email.endsWith('@bot.local');
         await telegram.sendMessage(chatId, [
-          '👤 <b>Your Profile</b>',
+          '<b>Your Profile</b>',
           '',
           `Name: ${user.name}`,
-          `Email: ${user.email}`,
+          ...(!isTelegramOnly ? [`Email: ${user.email}`] : []),
+          `Account type: ${isTelegramOnly ? 'Telegram only' : 'Google + Telegram'}`,
           `User ID: <code>${user.userId}</code>`,
+        ].join('\n'));
+        break;
+      }
+
+      case 'menu':
+      case 'help': {
+        await telegram.sendMessage(chatId, [
+          '<b>Available Commands</b>',
+          '',
+          '/add - Add a utility account',
+          '/bills - View current balances',
+          '/check - Force check all balances now',
+          '/remove - Remove an account',
+          '/status - Account status',
+          '/whoami - Your profile',
+          '/stop - Pause notifications',
+          '/resume - Resume notifications',
+          '/unlink - Unlink Telegram',
+          '/version - App version',
         ].join('\n'));
         break;
       }

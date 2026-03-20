@@ -444,16 +444,32 @@ export default function NotificationConfig() {
         {telegramLinked ? (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
+              <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:text-green-200">
                 Linked
               </span>
-              <span className="text-sm text-gray-600">
+              <span className="text-sm text-gray-600 dark:text-gray-400">
                 {telegramEnabled ? "Notifications active" : "Notifications paused"}
               </span>
             </div>
-            <p className="text-sm text-gray-500">
-              Manage via Telegram: send /stop, /resume, or /unlink to the bot.
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Manage via Telegram: send /stop, /resume, /menu, or /unlink to the bot.
             </p>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch("/api/notifications/config", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ telegramChatId: null, telegramEnabled: false, notificationChannel: "ntfy" }),
+                  });
+                  setTelegramLinked(false);
+                  setTelegramEnabled(false);
+                } catch { /* ignore */ }
+              }}
+              className="text-sm text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
+            >
+              Unlink Telegram
+            </button>
           </div>
         ) : (
           <div className="space-y-4">
