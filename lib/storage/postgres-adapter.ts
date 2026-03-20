@@ -804,9 +804,9 @@ export class PostgresAdapter implements StorageAdapter {
 
   async getSessionAndUser(sessionToken: string): Promise<{ session: import('../auth-adapter').AuthSession; user: import('../auth-adapter').AuthUser } | null> {
     const result = await this.pool.query(
-      `SELECT 
+      `SELECT
          s.id, s.session_token, s.user_id, s.expires,
-         u.user_id, u.email, u.name, u.image, u.email_verified, u.created_at, u.updated_at, u.ntfy_feed_url, u.ntfy_server_url, u.notification_enabled
+         ${USER_COLUMNS.split(', ').map(c => `u.${c}`).join(', ')}
        FROM auth_sessions s
        INNER JOIN users u ON s.user_id = u.user_id
        WHERE s.session_token = $1 AND s.expires > NOW()`,
@@ -825,18 +825,7 @@ export class PostgresAdapter implements StorageAdapter {
         userId: row.user_id,
         expires: row.expires,
       },
-      user: {
-        userId: row.user_id,
-        email: row.email,
-        name: row.name,
-        image: row.image,
-        emailVerified: row.email_verified,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        ntfyFeedUrl: row.ntfy_feed_url,
-        ntfyServerUrl: row.ntfy_server_url,
-        notificationEnabled: row.notification_enabled,
-      },
+      user: this.mapRowToUser(row),
     };
   }
 

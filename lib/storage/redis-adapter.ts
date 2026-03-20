@@ -564,8 +564,9 @@ export class RedisAdapter implements StorageAdapter {
     const userIds: string[] = [];
     let cursor = 0;
     do {
-      const [nextCursor, keys] = await this.redis.scan(cursor, { match: 'user:*', count: 100 });
-      cursor = nextCursor;
+      const result = await this.redis.scan(cursor, { match: 'user:*', count: 100 });
+      cursor = Number(result[0]);
+      const keys = result[1];
       for (const key of keys) {
         const k = key as string;
         // Only match user:{uuid} not user:{uuid}:accounts
@@ -627,64 +628,25 @@ export class RedisAdapter implements StorageAdapter {
 
     await this.redis.hset(`user:${userId}`, authUser);
 
-    return {
-      userId,
-      email: userData.email,
-      name: userData.name,
-      image: userData.image,
-      emailVerified: userData.emailVerified,
-      createdAt: now,
-      updatedAt: now,
-      ntfyFeedUrl: userData.ntfyFeedUrl,
-      ntfyServerUrl: userData.ntfyServerUrl,
-      notificationEnabled: userData.notificationEnabled,
-    };
+    const created = await this.getAuthUser(userId);
+    if (!created) throw new Error('Failed to create user');
+    return created;
   }
 
   async getAuthUser(userId: string): Promise<import('../auth-adapter').AuthUser | null> {
     const data = await this.redis.hgetall(`user:${userId}`);
-    
-    if (!data || Object.keys(data).length === 0) {
-      return null;
-    }
-
-    return {
-      userId: data.userId as string,
-      email: data.email as string,
-      name: data.name as string,
-      image: data.image ? (data.image as string) : undefined,
-      emailVerified: data.emailVerified ? new Date(data.emailVerified as string) : null,
-      createdAt: new Date(data.createdAt as string),
-      updatedAt: new Date(data.updatedAt as string),
-      ntfyFeedUrl: data.ntfyFeedUrl as string,
-      ntfyServerUrl: data.ntfyServerUrl as string,
-      notificationEnabled: data.notificationEnabled === '1',
-    };
+    if (!data || Object.keys(data).length === 0) return null;
+    return this.mapDataToUser(data);
   }
 
   async getAuthUserByEmail(email: string): Promise<import('../auth-adapter').AuthUser | null> {
-    // Redis doesn't have efficient email lookup, so we need to scan all users
-    // In production, consider maintaining an email->userId index
     const keys = await this.redis.keys('user:*');
-    
     for (const key of keys) {
       const data = await this.redis.hgetall(key as string);
       if (data && data.email === email) {
-        return {
-          userId: data.userId as string,
-          email: data.email as string,
-          name: data.name as string,
-          image: data.image ? (data.image as string) : undefined,
-          emailVerified: data.emailVerified ? new Date(data.emailVerified as string) : null,
-          createdAt: new Date(data.createdAt as string),
-          updatedAt: new Date(data.updatedAt as string),
-          ntfyFeedUrl: data.ntfyFeedUrl as string,
-          ntfyServerUrl: data.ntfyServerUrl as string,
-          notificationEnabled: data.notificationEnabled === '1',
-        };
+        return this.mapDataToUser(data);
       }
     }
-    
     return null;
   }
 
