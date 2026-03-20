@@ -2,6 +2,7 @@ import { TelegramService } from './telegram-service';
 
 // Mock axios
 jest.mock('axios');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const axios = require('axios');
 
 describe('TelegramService', () => {
