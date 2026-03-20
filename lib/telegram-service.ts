@@ -16,6 +16,17 @@ export interface TelegramUpdate {
     text?: string;
     date: number;
   };
+  callback_query?: {
+    id: string;
+    from: { id: number; first_name: string; username?: string };
+    message?: { chat: { id: number; type: string } };
+    data?: string;
+  };
+}
+
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data: string;
 }
 
 export class TelegramService {
@@ -27,16 +38,46 @@ export class TelegramService {
 
   async sendMessage(chatId: string, text: string, parseMode: 'HTML' | 'MarkdownV2' = 'HTML'): Promise<boolean> {
     try {
-      console.log(`[Telegram] sendMessage to chat_id=${chatId} via ${this.apiBase}/sendMessage`);
-      const res = await axios.post(`${this.apiBase}/sendMessage`, {
+      await axios.post(`${this.apiBase}/sendMessage`, {
         chat_id: chatId,
         text,
         parse_mode: parseMode,
       }, { timeout: 10000 });
-      console.log(`[Telegram] sendMessage response: from bot ${res.data?.result?.from?.username}`);
       return true;
     } catch (error) {
       console.error('Telegram sendMessage failed:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  }
+
+  async sendMessageWithKeyboard(
+    chatId: string,
+    text: string,
+    keyboard: InlineKeyboardButton[][],
+    parseMode: 'HTML' | 'MarkdownV2' = 'HTML'
+  ): Promise<boolean> {
+    try {
+      await axios.post(`${this.apiBase}/sendMessage`, {
+        chat_id: chatId,
+        text,
+        parse_mode: parseMode,
+        reply_markup: { inline_keyboard: keyboard },
+      }, { timeout: 10000 });
+      return true;
+    } catch (error) {
+      console.error('Telegram sendMessageWithKeyboard failed:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  }
+
+  async answerCallbackQuery(callbackQueryId: string): Promise<boolean> {
+    try {
+      await axios.post(`${this.apiBase}/answerCallbackQuery`, {
+        callback_query_id: callbackQueryId,
+      }, { timeout: 10000 });
+      return true;
+    } catch (error) {
+      console.error('Telegram answerCallbackQuery failed:', error instanceof Error ? error.message : error);
       return false;
     }
   }
@@ -68,7 +109,6 @@ export class TelegramService {
     if (!trimmed.startsWith('/')) {
       return { command: '', args: trimmed };
     }
-    // Handle /command@botname format
     const spaceIndex = trimmed.indexOf(' ');
     const rawCommand = spaceIndex === -1 ? trimmed : trimmed.substring(0, spaceIndex);
     const command = rawCommand.split('@')[0].substring(1).toLowerCase();

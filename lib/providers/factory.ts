@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProviderRegistry } from './registry';
 import { TeGeGasAdapter } from './te-ge-gas-adapter';
+import { TelmicoElectricityAdapter } from './telmico-electricity-adapter';
 import { ConfigValidator } from './config-validator';
 import { JsonProviderAdapter } from './json-provider-adapter';
 import type { ProvidersConfig } from './types';
@@ -30,11 +31,7 @@ export function createProviderRegistry(): ProviderRegistry {
 
   // Register code-based adapters first (they take precedence) - Requirement 9.4
   registry.registerAdapter(new TeGeGasAdapter());
-
-  // TODO: Register other code-based provider adapters as they are implemented
-  // registry.registerAdapter(new WaterProviderAdapter());
-  // registry.registerAdapter(new ElectricityProviderAdapter());
-  // registry.registerAdapter(new TrashProviderAdapter());
+  registry.registerAdapter(new TelmicoElectricityAdapter());
 
   // Load and register JSON-based adapters - Requirements 9.1, 9.2, 9.3
   loadJsonProviders(registry);

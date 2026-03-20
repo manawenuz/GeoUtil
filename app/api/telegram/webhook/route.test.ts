@@ -40,12 +40,31 @@ function telegramUpdate(text: string, chatId = 12345) {
 }
 
 describe('POST /api/telegram/webhook', () => {
+  const mockUser = {
+    userId: 'user-123',
+    email: 'telegram-12345@bot.local',
+    name: 'Test',
+    telegramChatId: '12345',
+    telegramEnabled: true,
+    notificationChannel: 'telegram' as const,
+    notificationEnabled: true,
+    ntfyFeedUrl: '',
+    ntfyServerUrl: 'https://ntfy.sh',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    emailVerified: null,
+  };
+
   const mockStorage = {
     getTelegramLinkToken: jest.fn(),
     markTelegramLinkTokenUsed: jest.fn(),
     updateUser: jest.fn(),
-    getUserByTelegramChatId: jest.fn(),
-    getAccountsByUser: jest.fn(),
+    getUser: jest.fn().mockResolvedValue(mockUser),
+    getUserByTelegramChatId: jest.fn().mockResolvedValue(mockUser),
+    getAccountsByUser: jest.fn().mockResolvedValue([]),
+    createUser: jest.fn().mockResolvedValue('user-123'),
+    getAccount: jest.fn(),
+    deleteAccount: jest.fn(),
   };
 
   beforeEach(() => {
@@ -72,7 +91,7 @@ describe('POST /api/telegram/webhook', () => {
     expect(mockSendMessage).toHaveBeenCalled();
   });
 
-  it('handles /start command', async () => {
+  it('handles /start command and auto-creates user', async () => {
     const res = await POST(makeRequest(telegramUpdate('/start')));
     expect(res.status).toBe(200);
     expect(mockSendMessage).toHaveBeenCalledWith(
@@ -116,37 +135,19 @@ describe('POST /api/telegram/webhook', () => {
     expect(mockSendMessage).toHaveBeenCalledWith('12345', expect.stringContaining('provide a token'));
   });
 
-  it('handles /stop for linked user', async () => {
-    mockStorage.getUserByTelegramChatId.mockResolvedValue({ userId: 'user-123' });
-
+  it('handles /stop', async () => {
     const res = await POST(makeRequest(telegramUpdate('/stop')));
     expect(res.status).toBe(200);
     expect(mockStorage.updateUser).toHaveBeenCalledWith('user-123', { telegramEnabled: false });
-    expect(mockSendMessage).toHaveBeenCalledWith('12345', expect.stringContaining('paused'));
   });
 
-  it('handles /stop for unlinked user', async () => {
-    mockStorage.getUserByTelegramChatId.mockResolvedValue(null);
-
-    const res = await POST(makeRequest(telegramUpdate('/stop')));
-    expect(res.status).toBe(200);
-    expect(mockSendMessage).toHaveBeenCalledWith('12345', expect.stringContaining('No account linked'));
-  });
-
-  it('handles /resume for linked user', async () => {
-    mockStorage.getUserByTelegramChatId.mockResolvedValue({ userId: 'user-123' });
-
+  it('handles /resume', async () => {
     const res = await POST(makeRequest(telegramUpdate('/resume')));
     expect(res.status).toBe(200);
     expect(mockStorage.updateUser).toHaveBeenCalledWith('user-123', { telegramEnabled: true });
   });
 
-  it('handles /status for linked user', async () => {
-    mockStorage.getUserByTelegramChatId.mockResolvedValue({
-      userId: 'user-123',
-      telegramEnabled: true,
-      notificationChannel: 'telegram',
-    });
+  it('handles /status', async () => {
     mockStorage.getAccountsByUser.mockResolvedValue([
       { providerName: 'te.ge', providerType: 'gas', enabled: true },
       { providerName: 'telmico', providerType: 'electricity', enabled: true },
@@ -157,15 +158,11 @@ describe('POST /api/telegram/webhook', () => {
     expect(mockSendMessage).toHaveBeenCalledWith('12345', expect.stringContaining('2 active'));
   });
 
-  it('handles /unlink for linked user', async () => {
-    mockStorage.getUserByTelegramChatId.mockResolvedValue({ userId: 'user-123' });
-
+  it('handles /unlink', async () => {
     const res = await POST(makeRequest(telegramUpdate('/unlink')));
     expect(res.status).toBe(200);
     expect(mockStorage.updateUser).toHaveBeenCalledWith('user-123', {
-      telegramChatId: undefined,
-      telegramEnabled: false,
-      notificationChannel: 'ntfy',
+      telegramChatId: undefined, telegramEnabled: false, notificationChannel: 'ntfy',
     });
   });
 

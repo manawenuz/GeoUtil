@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { ensureInitialized } from '@/lib/ensure-init';
 import { getStorageAdapter } from '@/lib/storage/factory';
+import { createEncryptionService } from '@/lib/encryption';
+import { getProviderRegistry } from '@/lib/providers/factory';
 import { TelegramService, TelegramUpdate } from '@/lib/telegram-service';
+import { User } from '@/lib/storage/types';
 
 function getTelegramService(): TelegramService | null {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -10,10 +14,42 @@ function getTelegramService(): TelegramService | null {
 }
 
 /**
+ * Ensure a user exists for this Telegram chat. Creates one if needed.
+ */
+async function ensureUser(chatId: string, fromName?: string): Promise<User> {
+  const storage = getStorageAdapter();
+  const existing = await storage.getUserByTelegramChatId(chatId);
+  if (existing) return existing;
+
+  // Create a Telegram-only user
+  const userId = randomUUID();
+  await storage.createUser({
+    userId,
+    email: `telegram-${chatId}@bot.local`,
+    name: fromName || `Telegram User ${chatId}`,
+    emailVerified: null,
+    ntfyFeedUrl: '',
+    ntfyServerUrl: 'https://ntfy.sh',
+    notificationEnabled: true,
+    telegramChatId: chatId,
+    telegramEnabled: true,
+    notificationChannel: 'telegram',
+  });
+
+  // createUser doesn't set telegram fields in the INSERT, so update them
+  await storage.updateUser(userId, {
+    telegramChatId: chatId,
+    telegramEnabled: true,
+    notificationChannel: 'telegram',
+  });
+
+  return (await storage.getUser(userId))!;
+}
+
+/**
  * POST /api/telegram/webhook — Receives updates from Telegram Bot API
  */
 export async function POST(request: NextRequest) {
-  // Verify webhook secret if configured
   const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (webhookSecret) {
     const headerSecret = request.headers.get('x-telegram-bot-api-secret-token');
@@ -23,9 +59,7 @@ export async function POST(request: NextRequest) {
   }
 
   const telegram = getTelegramService();
-  if (!telegram) {
-    return NextResponse.json({ ok: true }); // Acknowledge but can't respond
-  }
+  if (!telegram) return NextResponse.json({ ok: true });
 
   let update: TelegramUpdate;
   try {
@@ -34,7 +68,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  console.log('[Telegram Webhook] Received update:', JSON.stringify(update, null, 2));
+  // Handle callback queries (inline keyboard button presses)
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const cbChatId = String(cb.message?.chat?.id || cb.from.id);
+    const cbData = cb.data || '';
+
+    try {
+      await ensureInitialized();
+      await handleCallback(telegram, cbChatId, cbData);
+      // Answer the callback to remove loading state
+      await telegram.answerCallbackQuery(cb.id);
+    } catch (error) {
+      console.error('Telegram callback error:', error);
+    }
+    return NextResponse.json({ ok: true });
+  }
 
   const message = update.message;
   if (!message?.text || !message.chat) {
@@ -43,65 +92,87 @@ export async function POST(request: NextRequest) {
 
   const chatId = String(message.chat.id);
   const { command, args } = telegram.parseCommand(message.text);
-  console.log(`[Telegram Webhook] chat_id=${chatId}, from=${message.from?.username}, command=${command}, args=${args}`);
 
   try {
     await ensureInitialized();
     const storage = getStorageAdapter();
 
     switch (command) {
-      case 'start':
+      case 'start': {
+        const user = await ensureUser(chatId, message.from?.first_name);
+        const accounts = await storage.getAccountsByUser(user.userId);
+        const hasAccounts = accounts.filter(a => a.enabled).length > 0;
+
         await telegram.sendMessage(chatId, [
-          '👋 <b>Welcome to Georgia Utility Monitor!</b>',
+          `👋 <b>Welcome${user.name ? ', ' + user.name : ''}!</b>`,
           '',
-          'Link your account to receive balance notifications here.',
-          '',
-          '1. Go to your web app → Notification Settings',
-          '2. Click "Generate Telegram Link Token"',
-          '3. Send: <code>/link YOUR_TOKEN</code>',
+          hasAccounts
+            ? `You have ${accounts.filter(a => a.enabled).length} account(s). Use /bills to check balances.`
+            : 'Get started by adding your utility accounts:',
           '',
           '<b>Commands:</b>',
-          '/link &lt;token&gt; — Link your account',
+          '/add — Add a utility account',
           '/bills — View current balances',
           '/check — Force check all balances now',
-          '/whoami — Show your profile',
-          '/status — Check link status',
+          '/remove — Remove an account',
+          '/status — Check account status',
           '/stop — Pause notifications',
           '/resume — Resume notifications',
-          '/unlink — Unlink your account',
         ].join('\n'));
         break;
+      }
 
       case 'link': {
         if (!args) {
           await telegram.sendMessage(chatId, '❌ Please provide a token: <code>/link YOUR_TOKEN</code>');
           break;
         }
-
         const linkToken = await storage.getTelegramLinkToken(args);
         if (!linkToken) {
-          await telegram.sendMessage(chatId, '❌ Invalid or expired token. Please generate a new one from the web app.');
+          await telegram.sendMessage(chatId, '❌ Invalid or expired token. Generate a new one from the web app.');
           break;
         }
-
-        // Link the Telegram chat to the user
         await storage.updateUser(linkToken.userId, {
           telegramChatId: chatId,
           telegramEnabled: true,
           notificationChannel: 'telegram',
         });
         await storage.markTelegramLinkTokenUsed(args);
-
         await telegram.sendMessage(chatId, '✅ <b>Account linked successfully!</b>\n\nYou will now receive utility balance notifications here.');
+        break;
+      }
+
+      case 'add': {
+        await ensureUser(chatId, message.from?.first_name);
+        await telegram.sendMessageWithKeyboard(chatId, '🏠 <b>Add Utility Account</b>\n\nChoose utility type:', [
+          [{ text: '🔥 Gas (te.ge)', callback_data: 'add:gas:te.ge' }],
+          [{ text: '⚡ Electricity (TELMICO)', callback_data: 'add:electricity:telmico' }],
+        ]);
+        break;
+      }
+
+      case 'remove': {
+        const user = await ensureUser(chatId, message.from?.first_name);
+        const encService = createEncryptionService();
+        const accounts = await storage.getAccountsByUser(user.userId);
+        const enabled = accounts.filter(a => a.enabled);
+        if (enabled.length === 0) {
+          await telegram.sendMessage(chatId, '📭 No accounts to remove. Use /add to add one.');
+          break;
+        }
+        const buttons = enabled.map(a => {
+          const icon = a.providerType === 'gas' ? '🔥' : '⚡';
+          let num: string;
+          try { num = encService.decrypt(a.accountNumber); } catch { num = '***'; }
+          return [{ text: `${icon} ${a.providerName} (${num})`, callback_data: `rm:${a.accountId}` }];
+        });
+        await telegram.sendMessageWithKeyboard(chatId, '🗑 <b>Remove Account</b>\n\nChoose account to remove:', buttons);
         break;
       }
 
       case 'stop': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
         await storage.updateUser(user.userId, { telegramEnabled: false });
         await telegram.sendMessage(chatId, '🔇 Notifications paused. Use /resume to re-enable.');
         break;
@@ -109,10 +180,7 @@ export async function POST(request: NextRequest) {
 
       case 'resume': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
         await storage.updateUser(user.userId, { telegramEnabled: true });
         await telegram.sendMessage(chatId, '🔔 Notifications resumed!');
         break;
@@ -120,17 +188,13 @@ export async function POST(request: NextRequest) {
 
       case 'status': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
         const accounts = await storage.getAccountsByUser(user.userId);
         const enabledAccounts = accounts.filter(a => a.enabled);
         await telegram.sendMessage(chatId, [
           '📊 <b>Account Status</b>',
           '',
           `Notifications: ${user.telegramEnabled ? '🔔 Active' : '🔇 Paused'}`,
-          `Channel: ${user.notificationChannel}`,
           `Accounts: ${enabledAccounts.length} active`,
           ...enabledAccounts.map(a => `  • ${a.providerName} (${a.providerType})`),
         ].join('\n'));
@@ -139,33 +203,26 @@ export async function POST(request: NextRequest) {
 
       case 'whoami': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
         await telegram.sendMessage(chatId, [
           '👤 <b>Your Profile</b>',
           '',
           `Name: ${user.name}`,
           `Email: ${user.email}`,
           `User ID: <code>${user.userId}</code>`,
-          `Joined: ${user.createdAt.toLocaleDateString()}`,
         ].join('\n'));
         break;
       }
 
       case 'bills': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
-        const encryptionService = (await import('@/lib/encryption')).createEncryptionService();
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
+        const encryptionService = createEncryptionService();
         const userAccounts = await storage.getAccountsByUser(user.userId);
         const enabledAccounts = userAccounts.filter(a => a.enabled);
 
         if (enabledAccounts.length === 0) {
-          await telegram.sendMessage(chatId, '📭 No active accounts. Add accounts via the web app.');
+          await telegram.sendMessage(chatId, '📭 No accounts yet. Use /add to add one.');
           break;
         }
 
@@ -173,69 +230,46 @@ export async function POST(request: NextRequest) {
         for (const account of enabledAccounts) {
           const icon = account.providerType === 'gas' ? '🔥' : account.providerType === 'electricity' ? '⚡' : '📊';
           let accountNum: string;
-          try {
-            accountNum = encryptionService.decrypt(account.accountNumber);
-          } catch {
-            accountNum = '***';
-          }
+          try { accountNum = encryptionService.decrypt(account.accountNumber); } catch { accountNum = '***'; }
           const latest = await storage.getLatestBalance(account.accountId);
           const balanceStr = latest && latest.success
-            ? `${latest.balance.toFixed(2)} ₾`
-            : latest ? '⚠️ check failed' : 'never checked';
-          const lastChecked = latest?.checkedAt
-            ? new Date(latest.checkedAt).toLocaleString()
-            : 'never';
-
+            ? `${latest.balance.toFixed(2)} ₾` : latest ? '⚠️ check failed' : 'never checked';
+          const lastChecked = latest?.checkedAt ? new Date(latest.checkedAt).toLocaleString() : 'never';
           lines.push(`${icon} <b>${account.providerName}</b> (${accountNum})`);
           lines.push(`   Balance: <b>${balanceStr}</b>`);
           lines.push(`   Last checked: ${lastChecked}`);
           lines.push('');
         }
-
         await telegram.sendMessage(chatId, lines.join('\n'));
         break;
       }
 
       case 'check': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked. Use /link to connect first.');
-          break;
-        }
-        const encService = (await import('@/lib/encryption')).createEncryptionService();
-        const providerRegistry = (await import('@/lib/providers/factory')).getProviderRegistry();
-        const checkAccounts = await storage.getAccountsByUser(user.userId);
-        const activeAccounts = checkAccounts.filter(a => a.enabled);
+        if (!user) { await telegram.sendMessage(chatId, '❌ Send /start first.'); break; }
+        const encService = createEncryptionService();
+        const providerReg = getProviderRegistry();
+        const checkAccounts = (await storage.getAccountsByUser(user.userId)).filter(a => a.enabled);
 
-        if (activeAccounts.length === 0) {
-          await telegram.sendMessage(chatId, '📭 No active accounts to check.');
+        if (checkAccounts.length === 0) {
+          await telegram.sendMessage(chatId, '📭 No accounts to check. Use /add to add one.');
           break;
         }
 
-        await telegram.sendMessage(chatId, `🔄 Checking ${activeAccounts.length} account(s)...`);
+        await telegram.sendMessage(chatId, `🔄 Checking ${checkAccounts.length} account(s)...`);
 
         const results: string[] = ['✅ <b>Balance Check Results</b>', ''];
-        for (const account of activeAccounts) {
+        for (const account of checkAccounts) {
           const icon = account.providerType === 'gas' ? '🔥' : account.providerType === 'electricity' ? '⚡' : '📊';
           let accountNum: string;
-          try {
-            accountNum = encService.decrypt(account.accountNumber);
-          } catch {
-            accountNum = '***';
-          }
-          const provider = providerRegistry.getAdapter(account.providerName);
-          if (!provider) {
-            results.push(`${icon} ${account.providerName}: ❌ provider not found`);
-            continue;
-          }
+          try { accountNum = encService.decrypt(account.accountNumber); } catch { accountNum = '***'; }
+          const provider = providerReg.getAdapter(account.providerName);
+          if (!provider) { results.push(`${icon} ${account.providerName}: ❌ provider not found`); continue; }
           const result = await provider.fetchBalance(accountNum);
           if (result.success) {
             await storage.recordBalance({
-              accountId: account.accountId,
-              balance: result.balance,
-              currency: result.currency,
-              checkedAt: result.timestamp,
-              success: true,
+              accountId: account.accountId, balance: result.balance,
+              currency: result.currency, checkedAt: result.timestamp, success: true,
             });
             const emoji = result.balance > 0 ? '⚠️' : '✅';
             results.push(`${icon} <b>${account.providerName}</b>: ${emoji} ${result.balance.toFixed(2)} ₾`);
@@ -244,37 +278,132 @@ export async function POST(request: NextRequest) {
           }
           results.push('');
         }
-
         await telegram.sendMessage(chatId, results.join('\n'));
         break;
       }
 
       case 'unlink': {
         const user = await storage.getUserByTelegramChatId(chatId);
-        if (!user) {
-          await telegram.sendMessage(chatId, '❌ No account linked.');
-          break;
-        }
+        if (!user) { await telegram.sendMessage(chatId, '❌ No account to unlink.'); break; }
         await storage.updateUser(user.userId, {
-          telegramChatId: undefined,
-          telegramEnabled: false,
-          notificationChannel: 'ntfy',
+          telegramChatId: undefined, telegramEnabled: false, notificationChannel: 'ntfy',
         });
-        await telegram.sendMessage(chatId, '✅ Account unlinked. You will no longer receive notifications here.');
+        await telegram.sendMessage(chatId, '✅ Account unlinked.');
         break;
       }
 
       default:
-        await telegram.sendMessage(chatId, '❓ Unknown command. Try /bills, /check, /whoami, /status, or /start for help.');
+        // Check if this is a plain text reply (account number input)
+        if (!command && message.text) {
+          await handleTextInput(telegram, storage, chatId, message.text.trim());
+        } else {
+          await telegram.sendMessage(chatId, '❓ Unknown command. Try /add, /bills, /check, /status, or /start for help.');
+        }
     }
   } catch (error) {
     console.error('Telegram webhook error:', error);
-    // Try to notify user of error
-    try {
-      await telegram.sendMessage(chatId, '⚠️ Something went wrong. Please try again later.');
-    } catch { /* ignore */ }
+    try { await telegram.sendMessage(chatId, '⚠️ Something went wrong. Please try again later.'); } catch { /* ignore */ }
   }
 
-  // Always return 200 to Telegram
   return NextResponse.json({ ok: true });
+}
+
+// Simple in-memory state for multi-step flows (account number input)
+// In production, use Redis or DB. For now, this works on a single serverless instance.
+const pendingAdditions = new Map<string, { providerType: string; providerName: string; expiresAt: number }>();
+
+async function handleCallback(telegram: TelegramService, chatId: string, data: string) {
+  const storage = getStorageAdapter();
+
+  // Handle "add:gas:te.ge" or "add:electricity:telmico"
+  if (data.startsWith('add:')) {
+    const [, providerType, providerName] = data.split(':');
+    const icon = providerType === 'gas' ? '🔥' : '⚡';
+    const format = providerType === 'gas'
+      ? '9 digits (e.g. 473307-780) or 12 digits'
+      : '7 digits (e.g. 4823463)';
+
+    // Store pending state
+    pendingAdditions.set(chatId, {
+      providerType, providerName,
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 min timeout
+    });
+
+    await telegram.sendMessage(chatId, [
+      `${icon} <b>Adding ${providerName} account</b>`,
+      '',
+      `Please send your account number now.`,
+      `Format: ${format}`,
+    ].join('\n'));
+    return;
+  }
+
+  // Handle "rm:{accountId}"
+  if (data.startsWith('rm:')) {
+    const accountId = data.substring(3);
+    const account = await storage.getAccount(accountId);
+    if (account) {
+      await storage.deleteAccount(accountId);
+      await telegram.sendMessage(chatId, `✅ Removed ${account.providerName} account.`);
+    } else {
+      await telegram.sendMessage(chatId, '❌ Account not found.');
+    }
+    return;
+  }
+}
+
+async function handleTextInput(
+  telegram: TelegramService,
+  storage: ReturnType<typeof getStorageAdapter>,
+  chatId: string,
+  text: string
+) {
+  const pending = pendingAdditions.get(chatId);
+  if (!pending || pending.expiresAt < Date.now()) {
+    pendingAdditions.delete(chatId);
+    return; // Not expecting input, ignore
+  }
+
+  pendingAdditions.delete(chatId);
+
+  const { providerType, providerName } = pending;
+  const registry = getProviderRegistry();
+  const provider = registry.getAdapter(providerName);
+
+  if (!provider) {
+    await telegram.sendMessage(chatId, `❌ Provider ${providerName} not found.`);
+    return;
+  }
+
+  if (!provider.validateAccountNumber(text)) {
+    await telegram.sendMessage(chatId, `❌ Invalid account number format. Expected: ${provider.getAccountNumberFormat()}\n\nUse /add to try again.`);
+    return;
+  }
+
+  const user = await storage.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await telegram.sendMessage(chatId, '❌ Send /start first.');
+    return;
+  }
+
+  const encService = createEncryptionService();
+  const encrypted = encService.encrypt(text);
+
+  const accountId = await storage.createAccount({
+    userId: user.userId,
+    providerType: providerType as 'gas' | 'electricity',
+    providerName,
+    accountNumber: encrypted,
+    enabled: true,
+  });
+
+  const icon = providerType === 'gas' ? '🔥' : '⚡';
+  await telegram.sendMessage(chatId, [
+    `${icon} <b>Account added!</b>`,
+    '',
+    `Provider: ${providerName}`,
+    `Account: ${text}`,
+    '',
+    'Use /check to check your balance now.',
+  ].join('\n'));
 }
