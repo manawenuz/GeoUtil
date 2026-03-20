@@ -480,7 +480,7 @@ export default function NotificationConfig() {
                     )}{" "}
                     on Telegram:
                   </p>
-                  <code className="block bg-white border border-gray-200 rounded px-3 py-2 text-sm font-mono break-all select-all">
+                  <code className="block bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm font-mono break-all select-all text-gray-900 dark:text-gray-100">
                     /link {linkToken}
                   </code>
                 </div>
