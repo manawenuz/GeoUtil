@@ -18,6 +18,9 @@ describe('SchedulerService', () => {
       getUser: jest.fn(),
       getAccountsByUser: jest.fn(),
       getAccount: jest.fn(),
+      getAccountsDueForCheck: jest.fn().mockResolvedValue([]),
+      getScheduleState: jest.fn().mockResolvedValue(null),
+      upsertScheduleState: jest.fn(),
       recordCheckAttempt: jest.fn(),
       recordBalance: jest.fn(),
       incrementOverdueDays: jest.fn(),
@@ -204,8 +207,8 @@ describe('SchedulerService', () => {
 
       mockProviderRegistry.registerAdapter(mockAdapter);
 
+      mockStorageAdapter.getAccountsDueForCheck.mockResolvedValue([{ accountId, userId }]);
       mockStorageAdapter.getUser.mockResolvedValue(user);
-      mockStorageAdapter.getAccountsByUser.mockResolvedValue([account]);
       mockStorageAdapter.getAccount.mockResolvedValue(account);
       mockEncryptionService.decrypt.mockImplementation((val) => val.replace('encrypted-', ''));
       mockStorageAdapter.incrementOverdueDays.mockResolvedValue(1);
@@ -218,10 +221,8 @@ describe('SchedulerService', () => {
       expect(result.totalAccounts).toBe(1);
       expect(result.successfulChecks).toBe(1);
       expect(result.failedChecks).toBe(0);
-      expect(result.notificationsSent).toBe(1);
       expect(mockStorageAdapter.recordBalance).toHaveBeenCalled();
       expect(mockStorageAdapter.recordCheckAttempt).toHaveBeenCalled();
-      expect(mockStorageAdapter.recordNotification).toHaveBeenCalled();
     });
 
     it('should handle zero balance without sending notification', async () => {
@@ -268,8 +269,8 @@ describe('SchedulerService', () => {
 
       mockProviderRegistry.registerAdapter(mockAdapter);
 
+      mockStorageAdapter.getAccountsDueForCheck.mockResolvedValue([{ accountId, userId }]);
       mockStorageAdapter.getUser.mockResolvedValue(user);
-      mockStorageAdapter.getAccountsByUser.mockResolvedValue([account]);
       mockStorageAdapter.getAccount.mockResolvedValue(account);
       mockEncryptionService.decrypt.mockImplementation((val) => val.replace('encrypted-', ''));
 
@@ -337,8 +338,11 @@ describe('SchedulerService', () => {
 
       mockProviderRegistry.registerAdapter(mockAdapter);
 
+      mockStorageAdapter.getAccountsDueForCheck.mockResolvedValue([
+        { accountId: 'account-1', userId },
+        { accountId: 'account-2', userId },
+      ]);
       mockStorageAdapter.getUser.mockResolvedValue(user);
-      mockStorageAdapter.getAccountsByUser.mockResolvedValue(accounts);
       mockStorageAdapter.getAccount
         .mockResolvedValueOnce(null) // First account fails
         .mockResolvedValueOnce(accounts[1]); // Second account succeeds

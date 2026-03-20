@@ -12,6 +12,7 @@ import {
   NotificationData,
   OverdueTracking,
   TelegramLinkToken,
+  ScheduleState,
   MigrationStatus,
 } from './types';
 
@@ -469,6 +470,55 @@ export class RedisAdapter implements StorageAdapter {
   }
 
   // ===== Migration Operations =====
+
+  // ===== Schedule State Operations =====
+
+  async getScheduleState(accountId: string): Promise<ScheduleState | null> {
+    const data = await this.redis.hgetall(`schedule:${accountId}`);
+    if (!data || Object.keys(data).length === 0) return null;
+    return {
+      accountId: data.accountId as string,
+      lastCheckedAt: data.lastCheckedAt ? new Date(data.lastCheckedAt as string) : null,
+      nextCheckAt: new Date(data.nextCheckAt as string),
+      checkIntervalHours: parseInt(data.checkIntervalHours as string, 10),
+      consecutiveZeroCount: parseInt(data.consecutiveZeroCount as string, 10),
+      lastBalance: data.lastBalance ? parseFloat(data.lastBalance as string) : null,
+      updatedAt: new Date(data.updatedAt as string),
+    };
+  }
+
+  async upsertScheduleState(state: Partial<ScheduleState> & { accountId: string }): Promise<void> {
+    const existing = await this.getScheduleState(state.accountId);
+    const now = new Date().toISOString();
+    await this.redis.hset(`schedule:${state.accountId}`, {
+      accountId: state.accountId,
+      lastCheckedAt: (state.lastCheckedAt ?? existing?.lastCheckedAt)?.toISOString() ?? '',
+      nextCheckAt: (state.nextCheckAt ?? existing?.nextCheckAt ?? new Date()).toISOString(),
+      checkIntervalHours: String(state.checkIntervalHours ?? existing?.checkIntervalHours ?? 24),
+      consecutiveZeroCount: String(state.consecutiveZeroCount ?? existing?.consecutiveZeroCount ?? 0),
+      lastBalance: String(state.lastBalance ?? existing?.lastBalance ?? ''),
+      updatedAt: now,
+    });
+  }
+
+  async getAccountsDueForCheck(asOf?: Date): Promise<Array<{ accountId: string; userId: string }>> {
+    const checkTime = asOf ?? new Date();
+    // Get all user IDs, then their accounts, check schedule state
+    const results: Array<{ accountId: string; userId: string }> = [];
+    const userIds = await this.getAllUserIds();
+    for (const userId of userIds) {
+      const accountIds = await this.redis.smembers(`user:${userId}:accounts`);
+      for (const accountId of accountIds) {
+        const account = await this.redis.hgetall(`account:${accountId}`);
+        if (!account || account.enabled !== '1') continue;
+        const schedule = await this.getScheduleState(accountId as string);
+        if (!schedule || new Date(schedule.nextCheckAt) <= checkTime) {
+          results.push({ accountId: accountId as string, userId });
+        }
+      }
+    }
+    return results;
+  }
 
   // ===== Telegram Link Token Operations =====
 

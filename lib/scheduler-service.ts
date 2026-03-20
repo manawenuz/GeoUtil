@@ -1,7 +1,8 @@
-import { StorageAdapter } from './storage/types';
+import { StorageAdapter, User } from './storage/types';
 import { ProviderRegistry } from './providers/registry';
 import { NotificationService } from './notification-service';
 import { EncryptionService } from './encryption';
+import { SmartScheduler } from './smart-scheduler';
 
 /**
  * Result of a scheduled check execution
@@ -31,6 +32,7 @@ export class SchedulerService {
   private notificationService: NotificationService;
   private encryptionService: EncryptionService;
   private scheduleIntervalHours: number;
+  private smartScheduler: SmartScheduler;
 
   constructor(
     storageAdapter: StorageAdapter,
@@ -44,6 +46,7 @@ export class SchedulerService {
     this.notificationService = notificationService;
     this.encryptionService = encryptionService;
     this.scheduleIntervalHours = scheduleIntervalHours;
+    this.smartScheduler = new SmartScheduler();
   }
 
   /**
@@ -113,21 +116,40 @@ export class SchedulerService {
     };
 
     try {
-      // Note: The StorageAdapter interface doesn't have a getAllUsers method
-      // In a real implementation, we would need to add this method or pass userIds
-      if (!userIds || userIds.length === 0) {
-        console.warn('No user IDs provided to executeScheduledCheck. Cannot iterate all users without getAllUsers method.');
-        result.executionTime = Date.now() - startTime;
-        return result;
+      // Use smart scheduling: only check accounts that are due
+      const accountsDue = await this.storageAdapter.getAccountsDueForCheck(new Date());
+
+      // If userIds provided, filter to only those users
+      const filtered = userIds?.length
+        ? accountsDue.filter(a => userIds.includes(a.userId))
+        : accountsDue;
+
+      // Group by userId to load user data once
+      const byUser = new Map<string, string[]>();
+      for (const { accountId, userId } of filtered) {
+        const list = byUser.get(userId) || [];
+        list.push(accountId);
+        byUser.set(userId, list);
       }
 
-      // Process each user
-      for (const userId of userIds) {
-        try {
-          await this.processUserAccounts(userId, result);
-        } catch (error) {
-          console.error(`Error processing user ${userId}:`, error);
-          // Continue processing other users even if one fails
+      for (const [userId, accountIds] of byUser) {
+        const user = await this.storageAdapter.getUser(userId);
+        if (!user || !user.notificationEnabled) continue;
+
+        for (const accountId of accountIds) {
+          result.totalAccounts++;
+          try {
+            const notificationSent = await this.processAccount(accountId, user);
+            result.successfulChecks++;
+            if (notificationSent) result.notificationsSent++;
+          } catch (error) {
+            result.failedChecks++;
+            result.errors.push({
+              accountId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            console.error(`Error processing account ${accountId}:`, error);
+          }
         }
       }
     } catch (error) {
@@ -139,92 +161,31 @@ export class SchedulerService {
   }
 
   /**
-   * Process all accounts for a specific user
-   * 
-   * @param userId - The user ID to process
-   * @param result - The result object to update
-   */
-  private async processUserAccounts(userId: string, result: ScheduleResult): Promise<void> {
-    // Get user data for notification configuration
-    const user = await this.storageAdapter.getUser(userId);
-    if (!user) {
-      console.warn(`User ${userId} not found`);
-      return;
-    }
-
-    // Skip if notifications are disabled
-    if (!user.notificationEnabled) {
-      console.log(`Notifications disabled for user ${userId}, skipping`);
-      return;
-    }
-
-    // Get all accounts for this user
-    const accounts = await this.storageAdapter.getAccountsByUser(userId);
-    
-    // Process each account
-    for (const account of accounts) {
-      // Skip disabled accounts
-      if (!account.enabled) {
-        continue;
-      }
-
-      result.totalAccounts++;
-
-      try {
-        const notificationSent = await this.processAccount(
-          account.accountId,
-          user
-        );
-        result.successfulChecks++;
-        if (notificationSent) {
-          result.notificationsSent++;
-        }
-      } catch (error) {
-        result.failedChecks++;
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        result.errors.push({
-          accountId: account.accountId,
-          error: errorMessage,
-        });
-        console.error(`Error processing account ${account.accountId}:`, error);
-        // Continue processing other accounts
-      }
-    }
-  }
-
-  /**
-   * Process a single account: check balance and send notification if needed
+   * Process a single account: check balance, update schedule, send notification if needed
    */
   private async processAccount(
     accountId: string,
-    user: import('./storage/types').User,
+    user: User,
   ): Promise<boolean> {
-    // Get account details
     const account = await this.storageAdapter.getAccount(accountId);
-    if (!account) {
-      throw new Error(`Account ${accountId} not found`);
-    }
+    if (!account) throw new Error(`Account ${accountId} not found`);
 
-    // Get provider adapter
     const adapter = this.providerRegistry.getAdapter(account.providerName);
-    if (!adapter) {
-      throw new Error(`Provider adapter not found for ${account.providerName}`);
-    }
+    if (!adapter) throw new Error(`Provider adapter not found for ${account.providerName}`);
 
-    // Decrypt account number
     const decryptedAccountNumber = this.encryptionService.decrypt(account.accountNumber);
 
-    // Fetch balance from provider
-    const startTime = Date.now();
+    // Get current schedule state
+    const scheduleState = await this.storageAdapter.getScheduleState(accountId);
+    const lastBalance = scheduleState?.lastBalance ?? null;
+    const consecutiveZeroCount = scheduleState?.consecutiveZeroCount ?? 0;
+
+    // Fetch balance
     const balanceResult = await adapter.fetchBalance(decryptedAccountNumber);
-    const responseTime = Date.now() - startTime;
+    const now = new Date();
 
     // Record the check attempt
-    await this.storageAdapter.recordCheckAttempt(
-      accountId,
-      balanceResult.success,
-      balanceResult.error
-    );
+    await this.storageAdapter.recordCheckAttempt(accountId, balanceResult.success, balanceResult.error);
 
     // Record the balance
     await this.storageAdapter.recordBalance({
@@ -237,20 +198,47 @@ export class SchedulerService {
       rawResponse: balanceResult.rawResponse,
     });
 
-    // If check failed, don't process notifications
+    // Calculate next check using smart scheduler
+    const decision = this.smartScheduler.calculateNextCheck(
+      now, lastBalance, balanceResult.balance, balanceResult.success, consecutiveZeroCount
+    );
+
+    // Update schedule state
+    await this.storageAdapter.upsertScheduleState({
+      accountId,
+      lastCheckedAt: now,
+      nextCheckAt: decision.nextCheckAt,
+      checkIntervalHours: decision.intervalHours,
+      consecutiveZeroCount: decision.newConsecutiveZeroCount,
+      lastBalance: balanceResult.success ? balanceResult.balance : lastBalance,
+    });
+
     if (!balanceResult.success) {
       throw new Error(balanceResult.error || 'Balance check failed');
     }
 
-    // Handle overdue tracking and notifications
-    return await this.handleBalanceNotification(
-      accountId,
-      user,
-      account.providerName,
-      account.providerType,
-      decryptedAccountNumber,
-      balanceResult.balance
-    );
+    // Send notification if smart scheduler says so (bill arrived)
+    if (decision.shouldNotify) {
+      return await this.handleBalanceNotification(
+        accountId, user, account.providerName, account.providerType,
+        decryptedAccountNumber, balanceResult.balance
+      );
+    }
+
+    // Also handle ongoing overdue notifications
+    if (balanceResult.balance > 0) {
+      return await this.handleBalanceNotification(
+        accountId, user, account.providerName, account.providerType,
+        decryptedAccountNumber, balanceResult.balance
+      );
+    }
+
+    // Zero balance — reset overdue
+    if (balanceResult.balance === 0) {
+      await this.storageAdapter.resetOverdueDays(accountId);
+    }
+
+    return false;
   }
 
   /**

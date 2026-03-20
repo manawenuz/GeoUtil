@@ -11,6 +11,7 @@ import {
   Notification,
   NotificationData,
   TelegramLinkToken,
+  ScheduleState,
   MigrationStatus,
 } from './types';
 
@@ -814,6 +815,73 @@ export class SQLiteAdapter implements StorageAdapter {
       token: row.token,
       expires: new Date(row.expires),
     };
+  }
+
+  // ===== Schedule State Operations =====
+
+  async getScheduleState(accountId: string): Promise<ScheduleState | null> {
+    const row = this.db.prepare(
+      `SELECT account_id, last_checked_at, next_check_at, check_interval_hours,
+              consecutive_zero_count, last_balance, updated_at
+       FROM schedule_state WHERE account_id = ?`
+    ).get(accountId) as any;
+    if (!row) return null;
+    return {
+      accountId: row.account_id,
+      lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : null,
+      nextCheckAt: new Date(row.next_check_at),
+      checkIntervalHours: row.check_interval_hours,
+      consecutiveZeroCount: row.consecutive_zero_count,
+      lastBalance: row.last_balance,
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  async upsertScheduleState(state: Partial<ScheduleState> & { accountId: string }): Promise<void> {
+    const now = new Date().toISOString();
+    const existing = await this.getScheduleState(state.accountId);
+    if (existing) {
+      this.db.prepare(
+        `UPDATE schedule_state SET
+           last_checked_at = ?, next_check_at = ?, check_interval_hours = ?,
+           consecutive_zero_count = ?, last_balance = ?, updated_at = ?
+         WHERE account_id = ?`
+      ).run(
+        (state.lastCheckedAt ?? existing.lastCheckedAt)?.toISOString() ?? null,
+        (state.nextCheckAt ?? existing.nextCheckAt).toISOString(),
+        state.checkIntervalHours ?? existing.checkIntervalHours,
+        state.consecutiveZeroCount ?? existing.consecutiveZeroCount,
+        state.lastBalance ?? existing.lastBalance ?? null,
+        now,
+        state.accountId,
+      );
+    } else {
+      this.db.prepare(
+        `INSERT INTO schedule_state (account_id, last_checked_at, next_check_at, check_interval_hours, consecutive_zero_count, last_balance, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        state.accountId,
+        state.lastCheckedAt?.toISOString() ?? null,
+        (state.nextCheckAt ?? new Date()).toISOString(),
+        state.checkIntervalHours ?? 24,
+        state.consecutiveZeroCount ?? 0,
+        state.lastBalance ?? null,
+        now,
+      );
+    }
+  }
+
+  async getAccountsDueForCheck(asOf?: Date): Promise<Array<{ accountId: string; userId: string }>> {
+    const checkTime = (asOf ?? new Date()).toISOString();
+    const rows = this.db.prepare(
+      `SELECT a.account_id, a.user_id
+       FROM accounts a
+       LEFT JOIN schedule_state ss ON a.account_id = ss.account_id
+       WHERE a.enabled = 1
+         AND (ss.account_id IS NULL OR datetime(ss.next_check_at) <= datetime(?))
+       ORDER BY ss.next_check_at ASC`
+    ).all(checkTime) as any[];
+    return rows.map(row => ({ accountId: row.account_id, userId: row.user_id }));
   }
 
   // ===== Telegram Link Token Operations =====

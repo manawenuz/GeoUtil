@@ -11,6 +11,7 @@ import {
   Notification,
   NotificationData,
   TelegramLinkToken,
+  ScheduleState,
   MigrationStatus,
 } from './types';
 
@@ -520,6 +521,64 @@ export class PostgresAdapter implements StorageAdapter {
       appliedMigrations,
       pendingMigrations: [],
     };
+  }
+
+  // ===== Schedule State Operations =====
+
+  async getScheduleState(accountId: string): Promise<ScheduleState | null> {
+    const result = await this.pool.query(
+      `SELECT account_id, last_checked_at, next_check_at, check_interval_hours,
+              consecutive_zero_count, last_balance, updated_at
+       FROM schedule_state WHERE account_id = $1`,
+      [accountId]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      accountId: row.account_id,
+      lastCheckedAt: row.last_checked_at,
+      nextCheckAt: row.next_check_at,
+      checkIntervalHours: row.check_interval_hours,
+      consecutiveZeroCount: row.consecutive_zero_count,
+      lastBalance: row.last_balance !== null ? parseFloat(row.last_balance) : null,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async upsertScheduleState(state: Partial<ScheduleState> & { accountId: string }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO schedule_state (account_id, last_checked_at, next_check_at, check_interval_hours, consecutive_zero_count, last_balance, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (account_id) DO UPDATE SET
+         last_checked_at = COALESCE($2, schedule_state.last_checked_at),
+         next_check_at = COALESCE($3, schedule_state.next_check_at),
+         check_interval_hours = COALESCE($4, schedule_state.check_interval_hours),
+         consecutive_zero_count = COALESCE($5, schedule_state.consecutive_zero_count),
+         last_balance = COALESCE($6, schedule_state.last_balance),
+         updated_at = NOW()`,
+      [
+        state.accountId,
+        state.lastCheckedAt ?? null,
+        state.nextCheckAt ?? new Date(),
+        state.checkIntervalHours ?? 24,
+        state.consecutiveZeroCount ?? 0,
+        state.lastBalance ?? null,
+      ]
+    );
+  }
+
+  async getAccountsDueForCheck(asOf?: Date): Promise<Array<{ accountId: string; userId: string }>> {
+    const checkTime = asOf ?? new Date();
+    const result = await this.pool.query(
+      `SELECT a.account_id, a.user_id
+       FROM accounts a
+       LEFT JOIN schedule_state ss ON a.account_id = ss.account_id
+       WHERE a.enabled = true
+         AND (ss.account_id IS NULL OR ss.next_check_at <= $1)
+       ORDER BY ss.next_check_at ASC NULLS FIRST`,
+      [checkTime]
+    );
+    return result.rows.map(row => ({ accountId: row.account_id, userId: row.user_id }));
   }
 
   // ===== Telegram Link Token Operations =====

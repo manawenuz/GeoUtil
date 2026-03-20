@@ -99,6 +99,19 @@ export interface CheckAttempt {
 }
 
 /**
+ * Schedule state model - tracks per-account smart scheduling
+ */
+export interface ScheduleState {
+  accountId: string;
+  lastCheckedAt: Date | null;
+  nextCheckAt: Date;
+  checkIntervalHours: number;
+  consecutiveZeroCount: number;
+  lastBalance: number | null;
+  updatedAt: Date;
+}
+
+/**
  * Migration status model - tracks applied migrations
  */
 export interface MigrationStatus {
@@ -270,6 +283,12 @@ export interface StorageAdapter {
    */
   recordCheckAttempt(accountId: string, success: boolean, error?: string): Promise<void>;
   
+  // ===== Schedule State Operations =====
+
+  getScheduleState(accountId: string): Promise<ScheduleState | null>;
+  upsertScheduleState(state: Partial<ScheduleState> & { accountId: string }): Promise<void>;
+  getAccountsDueForCheck(asOf?: Date): Promise<Array<{ accountId: string; userId: string }>>;
+
   // ===== Telegram Link Token Operations =====
 
   createTelegramLinkToken(userId: string, token: string, expiresAt: Date): Promise<void>;
