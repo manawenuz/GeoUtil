@@ -42,3 +42,4 @@ next-env.d.ts
 # Logs
 logs/
 *.log
+.env.local.prod
