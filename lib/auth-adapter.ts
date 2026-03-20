@@ -100,9 +100,11 @@ export function createNextAuthAdapter(storage: AuthStorageAdapter): Adapter {
         name: user.name || "",
         image: user.image,
         emailVerified: user.emailVerified || null,
-        ntfyFeedUrl: "", // Will be configured later by user
+        ntfyFeedUrl: "",
         ntfyServerUrl: process.env.NTFY_SERVER_URL || "https://ntfy.sh",
         notificationEnabled: true,
+        telegramEnabled: false,
+        notificationChannel: 'telegram',
       });
       
       return {
